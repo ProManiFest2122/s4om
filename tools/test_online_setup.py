@@ -7,9 +7,14 @@ Starts relay/relay.py on a local port and checks
   - online_setup: mp_relay / mp_host_online / mp_join_online logic, with no token anywhere
 
 Run:  python tools/test_online_setup.py      (Python 3.7, like the other tools)
+
+      python tools/test_online_setup.py --relay host[:port]
+          only the protocol checks, against a relay that is already running somewhere
+          (a container, your server) - to confirm a deployment really works from this PC
 """
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -21,7 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import two_process_test as t  # noqa: E402  (game stubs, paths)
 
-PORT, STATUS_PORT = 19656, 19657
+HOST, PORT, STATUS_PORT = "127.0.0.1", 19656, 19657
+REMOTE = False      # True with --relay: someone else's process, no status page to look at
+TIMEOUT = 5
 results = []
 
 
@@ -30,9 +37,9 @@ def check(name, ok, detail=""):
     print("  {} {}{}".format("PASS" if ok else "FAIL", name, "" if ok or not detail else "  | " + str(detail)))
 
 
-def hello(line, port=PORT, keep=False):
+def hello(line, keep=False):
     """Send one handshake line; -> reply (and the socket when keep=True)."""
-    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
     s.sendall((line + "\n").encode("ascii"))
     buf = b""
     while not buf.endswith(b"\n"):
@@ -57,49 +64,57 @@ def readline(s):
     return buf.decode("ascii", "replace").strip()
 
 
+def status_is(name, test):
+    if REMOTE:
+        return
+    status = json.loads(urllib.request.urlopen("http://127.0.0.1:{}/".format(STATUS_PORT), timeout=5).read())
+    check(name, test(status), status)
+
+
 def relay_tests():
-    print("[A] relay protocol")
-    check("FIND on a room nobody opened -> ERR NO_ROOM", hello("S4OM FIND ABCDEF") == "ERR NO_ROOM")
-    check("JOIN on a room nobody opened -> ERR NO_ROOM", hello("S4OM JOIN ABCDEF -") == "ERR NO_ROOM")
+    print("[A] relay protocol ({}:{})".format(HOST, PORT))
+    # a room code of our own, so a run against a shared relay cannot collide with a real room
+    room = "T" + "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(7))
+    nobody = room[:-1] + ("A" if room[-1] != "A" else "B")
+    check("FIND on a room nobody opened -> ERR NO_ROOM", hello("S4OM FIND " + nobody) == "ERR NO_ROOM")
+    check("JOIN on a room nobody opened -> ERR NO_ROOM", hello("S4OM JOIN " + nobody + " -") == "ERR NO_ROOM")
     check("garbage -> ERR BAD_REQUEST", hello("HELLO THERE FRIEND") == "ERR BAD_REQUEST")
     check("bad room code -> ERR BAD_REQUEST", hello("S4OM FIND ../etc") == "ERR BAD_REQUEST")
     check("over-long hello -> refused", hello("S4OM FIND " + "A" * 400) == "ERR BAD_REQUEST")
 
-    reply, ctl = hello("S4OM HOST roomAA anything-goes", keep=True)
+    reply, ctl = hello("S4OM HOST {} anything-goes".format(room.lower()), keep=True)
     check("HOST without a token -> OK", reply == "OK", reply)
-    check("FIND finds the room (codes are case-insensitive)", hello("S4OM FIND ROOMaa") == "OK")
-    status = json.loads(urllib.request.urlopen("http://127.0.0.1:{}/".format(STATUS_PORT), timeout=5).read())
-    check("status page: 1 room, 1 player", status["rooms"] == 1 and status["players"] == 1, status)
-    check("DATA with an unknown id -> ERR NO_ROOM", hello("S4OM DATA ROOMAA deadbeef") == "ERR NO_ROOM")
+    check("FIND finds the room (codes are case-insensitive)", hello("S4OM FIND " + room.capitalize()) == "OK")
+    status_is("status page: 1 room, 1 player", lambda st: st["rooms"] == 1 and st["players"] == 1)
+    check("DATA with an unknown id -> ERR NO_ROOM", hello("S4OM DATA {} deadbeef".format(room)) == "ERR NO_ROOM")
 
     # a joiner arrives: host is told CONN <cid>, opens the DATA link, bytes flow both ways untouched
-    joiner = socket.create_connection(("127.0.0.1", PORT), timeout=5)
-    joiner.sendall(b"S4OM JOIN ROOMAA -\n")
-    ctl.settimeout(5)
+    joiner = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
+    joiner.sendall("S4OM JOIN {} -\n".format(room).encode("ascii"))
+    ctl.settimeout(TIMEOUT)
     conn = readline(ctl)
     check("host gets CONN <id>", conn.startswith("CONN ") and len(conn.split()) == 2, conn)
-    reply, data = hello("S4OM DATA ROOMAA " + conn.split()[-1], keep=True)
+    reply, data = hello("S4OM DATA {} {}".format(room, conn.split()[-1]), keep=True)
     check("host's DATA link -> OK", reply == "OK", reply)
     check("joiner -> OK", readline(joiner) == "OK")
     payload = bytes(bytearray(range(256))) * 40
     joiner.sendall(payload)
-    data.settimeout(5)
+    data.settimeout(TIMEOUT)
     got = b""
     while len(got) < len(payload):
         got += data.recv(65536)
     check("joiner -> host bytes arrive unchanged", got == payload)
     data.sendall(b"\x00\xffpong\n")
-    joiner.settimeout(5)
+    joiner.settimeout(TIMEOUT)
     check("host -> joiner bytes arrive unchanged", joiner.recv(64) == b"\x00\xffpong\n")
-    status = json.loads(urllib.request.urlopen("http://127.0.0.1:{}/".format(STATUS_PORT), timeout=5).read())
-    check("status page: 2 players", status["players"] == 2, status)
+    status_is("status page: 2 players", lambda st: st["players"] == 2)
     joiner.close()
-    data.settimeout(5)
+    data.settimeout(TIMEOUT)
     check("joiner leaves -> host's link closes", data.recv(16) == b"")
     data.close()
     ctl.close()
-    time.sleep(0.5)
-    check("host leaves -> room is gone", hello("S4OM FIND ROOMAA") == "ERR NO_ROOM")
+    time.sleep(1.0 if REMOTE else 0.5)
+    check("host leaves -> room is gone", hello("S4OM FIND " + room) == "ERR NO_ROOM")
 
 
 def mod_tests():
@@ -214,7 +229,30 @@ def launcher_tests():
     check("launcher describes the saved session", "HOST" in L.describe(L.load_config()) and "off" in L.describe({}))
 
 
+def remote_main(address):
+    """--relay host[:port]: protocol checks only, against a relay running somewhere else."""
+    global HOST, PORT, REMOTE, TIMEOUT
+    host, _, port = address.partition(":")
+    HOST, PORT, REMOTE, TIMEOUT = host, int(port or 7656), True, 10
+    try:
+        socket.create_connection((HOST, PORT), timeout=TIMEOUT).close()
+    except socket.timeout:
+        print("no answer from {}:{} within {}s - a firewall is dropping the port, or the address is wrong".format(
+            HOST, PORT, TIMEOUT))
+        return 2
+    except OSError as e:
+        print("{}:{} did not accept the connection ({}) - the machine answers but nothing listens on that port".format(
+            HOST, PORT, e))
+        return 2
+    relay_tests()
+    passed = sum(results)
+    print("result: {} passed, {} failed".format(passed, len(results) - passed))
+    return 0 if passed == len(results) else 1
+
+
 def main():
+    if "--relay" in sys.argv:
+        return remote_main(sys.argv[sys.argv.index("--relay") + 1])
     relay = subprocess.Popen([sys.executable, t.RELAY_PY, "--port", str(PORT), "--status-port", str(STATUS_PORT),
                               "--bind", "127.0.0.1", "--log", os.devnull], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:

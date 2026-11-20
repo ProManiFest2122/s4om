@@ -58,6 +58,42 @@ curl http://127.0.0.1:7657/             # {"rooms": 0, "players": 0, "uptime": 1
 
 The status page listens on the server itself only (127.0.0.1) unless you pass `--status-bind`.
 
+## Docker / Coolify
+
+`Dockerfile` in this folder builds a small image (Python on Alpine, runs as a non-root user,
+logs to stdout, health check included):
+
+```
+docker build -t s4om-relay .
+docker run -d --restart unless-stopped -p 7656:7656 s4om-relay
+```
+
+On **Coolify**: *+ New → Public Repository* (your fork of this repository), then
+
+| Setting | Value |
+|---|---|
+| Branch | the branch that has `relay/` |
+| Build Pack | Dockerfile |
+| Base Directory | `/relay` |
+| Dockerfile Location | `/Dockerfile` |
+| Domains | leave empty - this is raw TCP, not a website |
+| Ports Exposes | `7656` |
+| Port Mappings | `7656:7656` |
+| Healthcheck (dashboard) | off - the image brings its own |
+
+The relay cannot go through Coolify's proxy (that is for HTTP), so the port is published
+directly with **Port Mappings**. Because the host port is fixed, a redeploy stops the old
+container before starting the new one: players are cut off for a few seconds and the mod
+reconnects them by itself.
+
+Open 7656/tcp in the hosting provider's firewall as well. Ports published by Docker are not
+filtered by UFW on the server itself.
+
+After the first players connect, look at the log: `room ABC123 opened by <address>` should show
+the players' real addresses. If every line shows the same private address (172.x, 10.x), the
+server hides them from the container; the per-address limits below are then shared by everyone,
+so start the relay with `--max-conns-per-ip 0`.
+
 ## Point the mod at it
 
 Build the mod with the address baked in, so players have nothing to set up:
@@ -80,8 +116,8 @@ python -c "import socket;s=socket.create_connection(('your.server.example',7656)
 |---|---|---|
 | players per room | 12 (host + 11) | fixed, same as the mod |
 | open rooms | 500 | `--max-rooms` |
-| connections per address | 64 | `--max-conns-per-ip` |
-| wrong room codes per address per minute | 40 | `--max-misses` |
+| connections per address | 256 | `--max-conns-per-ip` (0 = no limit) |
+| wrong room codes per address per minute | 40 | `--max-misses` (0 = no limit) |
 
 Room codes are 6 characters from a 32-letter alphabet (about a billion combinations); the last
 limit is what stops someone from finding a room by trying codes.

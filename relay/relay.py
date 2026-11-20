@@ -85,7 +85,7 @@ class Relay:
 
     def too_many_misses(self, ip):
         """Wrong codes are rate-limited per address so room codes cannot be guessed by trying."""
-        if self.is_local(ip):
+        if self.is_local(ip) or not self.args.max_misses:
             return False
         q, now = self.misses[ip], time.time()
         while q and now - q[0] > 60.0:
@@ -132,7 +132,8 @@ class Relay:
         ip = peer[0]
         self.conns_by_ip[ip] += 1
         try:
-            if self.conns_by_ip[ip] > self.args.max_conns_per_ip and not self.is_local(ip):
+            limit = self.args.max_conns_per_ip
+            if limit and self.conns_by_ip[ip] > limit and not self.is_local(ip):
                 await self.reply(writer, "ERR SLOW_DOWN")
                 return
             self.tune(writer)
@@ -341,8 +342,11 @@ def parse_args(argv=None):
     p.add_argument("--status-bind", default="", help="address for the status page (default: this machine only)")
     p.add_argument("--log", default="", help="log file (default: print to the terminal)")
     p.add_argument("--max-rooms", type=int, default=500)
-    p.add_argument("--max-conns-per-ip", type=int, default=64)
-    p.add_argument("--max-misses", type=int, default=40, help="wrong room codes allowed per address per minute")
+    p.add_argument("--max-conns-per-ip", type=int, default=256,
+                   help="connections allowed from one address at a time, 0 = no limit (a full room is ~23 from the "
+                        "host's address; behind a proxy that hides addresses everyone shares one)")
+    p.add_argument("--max-misses", type=int, default=40,
+                   help="wrong room codes allowed per address per minute, 0 = no limit")
     p.add_argument("--open", action="store_true", help="accepted for compatibility; this relay never asks for tokens")
     return p.parse_args(argv)
 
