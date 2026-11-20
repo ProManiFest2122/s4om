@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v9.17 - 关系同步（🥉 依赖交互同步先做，否则关系变化少）
 
 研究（2026-08-05）:
@@ -17,10 +18,8 @@
 命令:
   mp_relsync  开始/停止关系同步
 """
-import threading
-import time
 
-import sims4.commands
+import threading, time, sims4.commands, sims4.resources
 
 try:
     from multimod import network
@@ -28,14 +27,18 @@ except Exception:
     network = None
 
 SYNC_INTERVAL = 5.0       # 关系变化慢，5s 轮询
+
 SCORE_THRESHOLD = 2.0     # 分数变化 >2 才广播
+
 _APPLY_THRESHOLD = 3.0    # 接收端分数差异 >3 才应用（防互相打架）
 
 _running = False
-_thread = None
-_last_scores = {}         # (a,b) -> score 上次广播的分数
-_last_bits = {}           # (a,b) -> frozenset(bits)
 
+_thread = None
+
+_last_scores = {}         # (a,b) -> score 上次广播的分数
+
+_last_bits = {}           # (a,b) -> frozenset(bits)
 
 def _out(msg, _connection=None):
     try:
@@ -49,135 +52,147 @@ def _out(msg, _connection=None):
         except Exception:
             pass
 
-
 def _family_sim_ids():
-    """家庭内所有 sim_info id 列表"""
+    """Household Sims + every Sim on the lot (their relationships with townies/visitors too)."""
     try:
-        import services  # v9.21.1: 真实游戏无 sims4.services，顶层 services 才是游戏模块
+        import services
         hh = services.active_household()
-        if hh is None:
-            return []
-        return [si.id for si in hh.sim_info_gen() if si is not None]
+        ids = [si.id for si in hh.sim_info_gen() if si is not None] if hh is not None else []
+        others = [int(s.sim_info.id) for s in services.sim_info_manager().instanced_sims_gen()]
+        return (
+         ids, sorted(set(ids) | set(others)))
     except Exception:
-        return []
-
+        return ([], [])
 
 def _read_relationship(sim_info_a, sim_info_b):
-    """读 A→B 关系 → (score, bits_tuple)"""
+    """A -> B: ({track guid: value}, sorted bit guids). Every track - friendship, romance,
+    and pack ones - not just the default one (fork 2026-10-26)."""
+    tracks, bits = {}, []
     try:
         tracker = getattr(sim_info_a, "relationship_tracker", None)
         if tracker is None:
-            return (0.0, ())
-        score = tracker.get_relationship_score(sim_info_b.id) or 0.0
-        bits = []
-        for bit in tracker.get_all_bits(sim_info_b.id):
+            return ({}, ())
+        for tr in tracker.relationship_tracks_gen(sim_info_b.id):
             try:
-                bits.append(getattr(bit, "guid64", str(bit)))
+                tracks[str(int(tr.guid64))] = round(float(tr.get_value()), 1)
             except Exception:
                 continue
-        return (float(score), tuple(sorted(str(b) for b in bits)))
-    except Exception:
-        return (0.0, ())
 
+        for bit in tracker.get_all_bits(sim_info_b.id):
+            try:
+                bits.append(str(int(bit.guid64)))
+            except Exception:
+                continue
 
-def _broadcast_loop():
-    global _running
-    while _running:
-        try:
-            ids = _family_sim_ids()
-            for i in range(len(ids)):
-                for j in range(i + 1, len(ids)):
-                    a, b = ids[i], ids[j]
-                    import services  # v9.21.1: 真实游戏无 sims4.services，顶层 services 才是游戏模块
-                    sia = services.sim_info_manager().get(a)
-                    sib = services.sim_info_manager().get(b)
-                    if sia is None or sib is None:
-                        continue
-                    # A→B
-                    score, bits = _read_relationship(sia, sib)
-                    key = (a, b)
-                    prev_s = _last_scores.get(key)
-                    prev_b = _last_bits.get(key)
-                    if prev_s is None or abs(score - prev_s) >= SCORE_THRESHOLD or prev_b != bits:
-                        _last_scores[key] = score
-                        _last_bits[key] = bits
-                        _broadcast(a, b, score, bits)
-                    # B→A（关系双向）
-                    score2, bits2 = _read_relationship(sib, sia)
-                    key2 = (b, a)
-                    prev_s2 = _last_scores.get(key2)
-                    prev_b2 = _last_bits.get(key2)
-                    if prev_s2 is None or abs(score2 - prev_s2) >= SCORE_THRESHOLD or prev_b2 != bits2:
-                        _last_scores[key2] = score2
-                        _last_bits[key2] = bits2
-                        _broadcast(b, a, score2, bits2)
-        except Exception:
-            pass
-        for _ in range(int(SYNC_INTERVAL / 0.05)):
-            if not _running:
-                return
-            time.sleep(0.05)
-
-
-def _broadcast(sim_a, sim_b, score, bits):
-    if network is None:
-        return
-    try:
-        msg = {"type": "relationship", "sim_a": sim_a, "sim_b": sim_b,
-               "score": score, "bits": list(bits), "ts": time.time()}
-        if network._is_host:
-            network._broadcast(msg)
-        elif network._client_socket is not None:
-            network._send_json(network._client_socket, msg)
     except Exception:
         pass
 
+    return (
+     tracks, tuple(sorted(bits)))
+
+def rel_plan(local_tracks, local_bits, remote_tracks, remote_bits, tol=1.0):
+    """Pure (tested): (tracks to set {guid: value}, bits to add, bits to remove)."""
+    set_t = {g: v for g, v in (remote_tracks or {}).items() if g not in (local_tracks or {}) or abs(float(v) - float(local_tracks[g])) >= tol}
+    rb, lb = set((str(b) for b in remote_bits or ())), set((str(b) for b in local_bits or ()))
+    return (
+     set_t, sorted(rb - lb), sorted(lb - rb))
+
+def _broadcast_loop():
+    """Host only: the host's game is the one truth for relationships (fork 2026-10-26 - both
+    games used to send every pair and fight over the score)."""
+    global _running
+    while _running:
+        try:
+            if network is not None:
+                if network._is_host:
+                    if network._clients:
+                        import services
+                        (household, everyone) = _family_sim_ids()
+                        for a in household:
+                            sia = services.sim_info_manager().get(a)
+                            if sia is None:
+                                continue
+                            for b in everyone:
+                                if a == b:
+                                    continue
+                                sib = services.sim_info_manager().get(b)
+                                if sib is None:
+                                    continue
+                                for (x, y, sx, sy) in ((a, b, sia, sib), (b, a, sib, sia)):
+                                    (tracks, bits) = _read_relationship(sx, sy)
+                                    if not tracks and not bits:
+                                        continue
+                                    key = (
+                                     x, y)
+                                    if _last_scores.get(key) != tracks or _last_bits.get(key) != bits:
+                                        _last_scores[key] = tracks
+                                        _last_bits[key] = bits
+                                        _broadcast(x, y, tracks, bits)
+
+        except Exception as e:
+            if network is not None:
+                network._log("relationship_sync send error: {}".format(e))
+
+        for _ in range(int(SYNC_INTERVAL / 0.05)):
+            if not _running:
+                return
+            else:
+                time.sleep(0.05)
+
+def _broadcast(sim_a, sim_b, tracks, bits):
+    if network is None:
+        return
+    try:
+        msg = {'type':"relationship", 
+         'sim_a':sim_a,  'sim_b':sim_b,  'tracks':tracks,  'bits':list(bits), 
+         'ts':(time.time)()}
+        if network._is_host:
+            network._broadcast(msg)
+    except Exception:
+        pass
 
 def process_message(data):
-    """收到远端关系 → 应用到本地 sim_a 的 tracker"""
+    """Joiners: make A -> B match the host exactly (tracks, bits added AND removed)."""
     try:
-        sim_a = int(data.get("sim_a", 0))
-        sim_b = int(data.get("sim_b", 0))
-        score = float(data.get("score", 0.0))
-        bits = data.get("bits", [])
-        if not sim_a or not sim_b:
+        if network is not None and network._is_host:
             return
-        import services  # v9.21.1: 真实游戏无 sims4.services，顶层 services 才是游戏模块
+        sim_a, sim_b = int(data.get("sim_a", 0)), int(data.get("sim_b", 0))
+        if not (sim_a and sim_b):
+            return
+        import services
         sia = services.sim_info_manager().get(sim_a)
-        sib = services.sim_info_manager().get(sim_b)
-        if sia is None or sib is None:
+        if sia is None or services.sim_info_manager().get(sim_b) is None:
             return
         tracker = getattr(sia, "relationship_tracker", None)
         if tracker is None:
             return
-        # 分数（差异 > 阈值才应用，防双向打架）
-        cur = tracker.get_relationship_score(sim_b) or 0.0
-        if abs(float(cur) - score) >= _APPLY_THRESHOLD:
-            tracker.set_relationship_score(sim_b, score)
-        # 关系 bits（缺失的补上）
-        cur_bits = set()
-        for bit in tracker.get_all_bits(sim_b):
-            try:
-                cur_bits.add(str(getattr(bit, "guid64", str(bit))))
-            except Exception:
-                continue
-        for b in bits:
-            if str(b) not in cur_bits:
-                try:
-                    bit_inst = services.get_instance_manager(
-                        sims4.resources.Types.STATISTIC).get(int(b) if str(b).isdigit() else b)
-                    if bit_inst is not None:
-                        tracker.add_relationship_bit(sim_b, bit_inst, force_add=True)
-                except Exception:
-                    continue
-        network._log("relationship_sync: applied {}<->{} score={}".format(sim_a, sim_b, score))
+        (lt, lb) = _read_relationship(sia, services.sim_info_manager().get(sim_b))
+        (set_t, add_b, rem_b) = rel_plan(lt, lb, data.get("tracks") or {}, data.get("bits") or [])
+        stats = services.get_instance_manager(sims4.resources.Types.STATISTIC)
+        for (g, v) in set_t.items():
+            tt = stats.get(int(g))
+            if tt is not None:
+                tracker.set_relationship_score(sim_b, (float(v)), track=tt)
+
+        bit_mgr = services.get_instance_manager(sims4.resources.Types.RELATIONSHIP_BIT)
+        for g in add_b:
+            bit = bit_mgr.get(int(g))
+            if bit is not None:
+                tracker.add_relationship_bit(sim_b, bit, force_add=True)
+
+        for g in rem_b:
+            bit = bit_mgr.get(int(g))
+            if bit is not None:
+                tracker.remove_relationship_bit(sim_b, bit)
+
+        if set_t or add_b or rem_b:
+            network._log("relationship_sync: {} -> {} tracks {} +bits {} -bits {}".format(sim_a, sim_b, set_t, add_b, rem_b))
     except Exception as e:
         if network is not None:
             try:
                 network._log("relationship_sync apply error: {}".format(e))
             except Exception:
                 pass
-
 
 @sims4.commands.Command('mp_relsync', command_type=sims4.commands.CommandType.Live)
 def mp_relsync(*args, _connection=None):
@@ -193,7 +208,6 @@ def mp_relsync(*args, _connection=None):
         _thread.start()
     _out('mp_relsync: relationship sync {}'.format('on' if _running else 'off'), _connection)
 
-
 def start():
     global _running, _thread
     if _running:
@@ -201,7 +215,6 @@ def start():
     _running = True
     _thread = threading.Thread(target=_broadcast_loop, daemon=True)
     _thread.start()
-
 
 def stop():
     global _running

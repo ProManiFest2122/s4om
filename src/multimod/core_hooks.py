@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v9.19 - core_services.on_tick hook (S4MP CoreServicesHooks style)
 
 S4MP decompile confirmed (2026-08-06):
@@ -9,17 +10,25 @@ SimSync usage:
   Replaces add_alarm_real_time (TimeService dependency → alarm errors in main menu)
   Game runs ~30fps → we throttle to 500ms equivalent via timer
 """
+
 import time as _time
+
+from multimod import userdir as _userdir
+
 from functools import wraps as _wraps
 
 _tick_hook_installed = False
+
 _original_on_tick = None
+
 _last_proc_time = 0
+
 _last_fast_time = 0
+
 _PROC_INTERVAL = 0.5   # housekeeping (ping, heartbeats, watchdog, zone checks)
+
 _FAST_INTERVAL = 0.03  # fork: incoming game messages ~every tick - was gated to 500ms,
                        # which alone added up to half a second of lag to every update
-
 
 def _log(msg):
     try:
@@ -27,11 +36,9 @@ def _log(msg):
         network._log(msg)
     except Exception:
         import os
-        p = os.path.join(os.path.expanduser("~"), "Documents",
-                         "Electronic Arts", "The Sims 4", "Mods", "mp_debug.log")
+        p = _userdir.sims_path("Mods", "mp_debug.log")
         with open(p, "a", encoding="utf-8") as f:
             f.write("[{}] {}\n".format(_time.strftime("%H:%M:%S"), msg))
-
 
 def install_on_tick_hook():
     """安装 core_services.on_tick 钩子（参考 S4MP CoreServicesHooks.setup_hooks）"""
@@ -56,7 +63,6 @@ def install_on_tick_hook():
     except Exception as e:
         _log("on_tick hook failed: {}".format(e))
 
-
 def remove_on_tick_hook():
     """恢复原始 on_tick（参考 S4MP CoreServicesHooks.stop_hooks）"""
     global _tick_hook_installed, _original_on_tick
@@ -70,7 +76,6 @@ def remove_on_tick_hook():
         _log("core_services.on_tick hook removed")
     except Exception:
         pass
-
 
 def _on_game_tick():
     """Every game tick: drain incoming messages (budgeted); housekeeping every 500ms."""

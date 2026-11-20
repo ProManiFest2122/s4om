@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer M3c - 时间同步（主机掌控，对齐 S4MP clock_manager）
 
 功能目标（对齐 S4MP clock 逻辑）:
@@ -24,50 +25,57 @@ import sims4.commands
 from multimod import network
 
 # ============ 全局状态 ============
+
 _clock_sync_enabled = True   # mp_clock 开关
+
 _is_host = False             # 当前角色（由 mp_host/mp_join 设置）
+
 _applying_remote = False     # 正在应用主机广播的速度（避免拦截自己）
 
 # ============ GameClock.set_clock_speed Hook ============
-_orig_set_clock_speed = None
 
+_orig_set_clock_speed = None
 
 def _install_clock_hook():
     """替换 GameClock.set_clock_speed（双端安装）"""
     global _orig_set_clock_speed
     if _orig_set_clock_speed is not None:
-        return  # 已安装
+        return
     try:
-        from clock import GameClock, ClockSpeedMode  # noqa: F401
+        from clock import GameClock, ClockSpeedMode
         _orig_set_clock_speed = GameClock.set_clock_speed
 
-        # fork: pass the game's own arguments straight through. The old fixed signature
-        # (speed, source, reason, immediate) didn't match the real GameClock.set_clock_speed,
-        # so the game's own calls (e.g. pressing play) raised before reaching this body and the
-        # game stayed paused - Sims wouldn't walk even for a host alone in the room.
         def _patched_set_clock_speed(self, speed, *args, **kwargs):
+            global _applying_remote
+            global _clock_sync_enabled
+            global _is_host
             try:
                 if _clock_sync_enabled:
                     if _is_host:
-                        # 主机：正常执行 + 广播给客机
+                        try:
+                            from multimod import start_hold
+                            if start_hold.block_unpause(speed):
+                                return False
+                        except Exception as e:
+                            network._log("start hold clock error: {}".format(e))
+
                         result = _orig_set_clock_speed(self, speed, *args, **kwargs)
                         try:
                             network._log("clock: host speed -> {} (result {})".format(int(speed), result))
                         except Exception:
                             pass
+
                         try:
                             network._send_clock_broadcast(speed)
                         except Exception as e:
                             network._log("clock broadcast error: {}".format(e))
+
                         return result
                     if _applying_remote:
-                        # 来自主机的广播 → 放行
                         return _orig_set_clock_speed(self, speed, *args, **kwargs)
-                    # 客机自己点暂停/播放 → 拦截 + 通知
                     network._log("clock intercept: client tried to change speed={}".format(speed))
                     network._notify("Time is controlled by the host")
                     return False
-                # 未启用同步 → 原逻辑
                 return _orig_set_clock_speed(self, speed, *args, **kwargs)
             except Exception as e:
                 network._log("clock hook error: {}".format(e))
@@ -78,13 +86,11 @@ def _install_clock_hook():
     except Exception as e:
         network._log("clock hook install failed: {}".format(e))
 
-
 def set_host_flag(is_host):
     """由 network.mp_host/mp_join 调用，设置当前角色"""
     global _is_host
     _is_host = is_host
     network._log("clock role: {}".format("host" if is_host else "client"))
-
 
 def _get_game_clock():
     """v9.21.1: 取 GameClock 服务。真实游戏 API 是 services.game_clock_service()
@@ -101,7 +107,6 @@ def _get_game_clock():
         return fn()
     except Exception:
         return None
-
 
 def apply_remote_clock(speed):
     """客机应用主机广播的速度（在 alarm 主线程调用）"""
@@ -129,14 +134,12 @@ def apply_remote_clock(speed):
     except Exception as e:
         network._log("apply remote clock error: {}".format(e))
 
-
 def process_message(data):
     """处理 clock 类型消息（由 network._process_incoming 分发）"""
     if data.get("type") == "clock":
         speed = data.get("speed")
         if speed is not None:
             apply_remote_clock(speed)
-
 
 @sims4.commands.Command('mp_clock', command_type=sims4.commands.CommandType.Live)
 def mp_clock(action="status", _connection=None):
@@ -171,8 +174,6 @@ def mp_clock(action="status", _connection=None):
     network._log("mp_clock status: enabled={} is_host={} speed={}".format(
         _clock_sync_enabled, _is_host, speed))
 
-
-# ============ v9.17: 登录快照支持 ============
 def get_current_speed():
     """返回当前游戏速度（快照用）。v9.21.1: 原实现 from sims4 import services
     ——真实游戏无 sims4.services 模块（python/core/sims4/ 下不存在 services），
@@ -181,7 +182,18 @@ def get_current_speed():
     try:
         gcs = _get_game_clock()
         if gcs is None:
-            return None
-        return gcs.clock_speed
+            return
+        return shareable_speed(gcs.clock_speed)
     except Exception:
-        return None
+        return
+
+def shareable_speed(speed):
+    """fork: speeds 4 (interaction startup) and 5 (ultra speed while every Sim sleeps) are
+    the game's own fast-forwards - each PC enters them by itself. Sending them made joiners
+    with awake Sims try to run at ultra speed, and desync repair fought over it. Share 3."""
+    try:
+        if int(speed) > 3:
+            return 3
+        return int(speed)
+    except (TypeError, ValueError):
+        return speed

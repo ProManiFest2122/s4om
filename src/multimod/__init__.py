@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer M1 - 入口模块 (v4.3)
 
 v4.3: 通知用 S4MP 同款 (sim_info + distributor 直发) + 自动消息处理 alarm
@@ -9,12 +10,12 @@ v4.2 实验: 验证多模块 + Live 类型命令是否都正常
 """
 
 import sims4.commands
-import os
-import time
 
-LOG_PATH = os.path.join(os.path.expanduser("~"), "Documents", "Electronic Arts",
-                        "The Sims 4", "Mods", "mp_debug.log")
+from multimod import userdir as _userdir
 
+import os, time
+
+LOG_PATH = _userdir.sims_path("Mods", "mp_debug.log")
 
 def _log(msg):
     try:
@@ -23,15 +24,63 @@ def _log(msg):
     except Exception:
         pass
 
+_log("=== S4OM mod loaded (SimSync v9.21 base) ===")
 
-_log("=== v9.21.0 module loaded ===")
+_log("S4OM folder: {}".format(_userdir.SIMS_DIR))
 
-# 引入多模块
 from multimod import network  # noqa: F401
+
 from multimod import reload_service  # noqa: F401  # v9.19: 热重载 (S4MP 借鉴)
+
 from multimod import event_system  # noqa: F401  # v9.19: EventHook + tick (S4MP 借鉴)
+
 from multimod import core_hooks  # noqa: F401  # v9.19: on_tick hook (S4MP 借鉴)
 
+from multimod import desync_repair
+
+from multimod import party_games
+
+from multimod import resync
+
+from multimod import lot_share
+
+from multimod import menus
+
+from multimod import dialog_router
+
+from multimod import online_setup
+
+from multimod import world_sync
+
+from multimod import session_tweaks
+
+from multimod import selfcheck
+
+from multimod import save_index
+
+from multimod import native
+
+from multimod import autoload
+
+from multimod import engine
+
+from multimod import world_flow
+
+from multimod import start_hold
+
+from multimod import living_world
+
+from multimod import activity_sync
+
+from multimod import object_state_sync
+
+from multimod import look_sync
+
+from multimod import npc_sync
+
+from multimod import lot_live
+
+from multimod import byos
 
 def _auto_apply_config():
     """游戏加载完成后自动读取启动器配置并连接（延迟等待游戏就绪）"""
@@ -59,9 +108,7 @@ def _auto_apply_config():
     except Exception as e:
         _log("auto-apply setup error: {}".format(e))
 
-
 _auto_apply_config()  # 启动器一键启动时自动连接
-
 
 @sims4.commands.Command("mp_hello", command_type=sims4.commands.CommandType.Live)
 def mp_hello(*args, _connection=None):
@@ -69,7 +116,6 @@ def mp_hello(*args, _connection=None):
     output = sims4.commands.CheatOutput(_connection)
     output("Sims4Multiplayer v4.2: OK!")
     _notify('mp_hello v4.2 works!')
-
 
 def _notify(text):
     try:
@@ -106,5 +152,4 @@ def _notify(text):
     except Exception as e:
         _log("notify failed: {}".format(e))
 
-
-_log("=== v9.21.0 init complete ===")
+_log("=== S4OM init complete ===")

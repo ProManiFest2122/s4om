@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer M3d - 房间系统（Lobby，对齐 S4MP 多人联机）
 
 功能（用户需求 2026-08-04）:
@@ -23,49 +24,65 @@
 """
 
 import json
-import os
-import random  # v9.4: 重连退避 jitter（研究: 防 thundering herd）
-import socket
-import time
-import threading
-import hmac as _hmac_mod  # v9.25: 密码时序安全比对
 
-import sims4.commands
+from multimod import userdir as _userdir
+
+import os, re, random, socket, time, threading, hmac as _hmac_mod, sims4.commands
 
 from multimod import network
 
 # ============ 配置 ============
 # 房间状态文件（启动器 GUI 轮询读取显示房间列表）
+
 LOBBY_STATE_PATH = network.LOBBY_STATE_PATH
 
 # ============ 全局状态 ============
 # members: {player_id: {name, ip, ready, in_lot, is_host, online, last_seen}}
+
 _members = {}
+
 _save_sync_phase = "idle"   # idle | waiting_ack | done
+
 _state_lock = threading.Lock()  # v9.11: state 文件写锁（并发写安全）
+
 _members_lock = threading.Lock()  # v9.26: 成员 dict 检查-修改原子化（Gemini 架构审查 #3）
+
 _save_sync_acks = set()
+
 _start_granted = False       # 存档同步完成后所有成员获得开始权
+
 _player_name = 'Player'
+
 _last_broadcast_state = None
+
 _reconnect_in_progress = False  # v9.20.4: 重连循环防重入（断线风暴时避免循环叠加）
 
 # M3d 增强（十轮研究 2026-08-04）:
 # - 房间码: 房主建房生成 6 位短码，加入者输码免输 IP
 # - 心跳: 每 5s 客户端 ping，host 记录 last_seen，>15s 标记离线
 # - 离开/踢人/转交: 房主权限
+
+_reconnect_gen = 0
+
+CLAIM_MAX_AGE = 600
+
 ROOM_CODE = ""
+
 ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 去易混淆字符
+
 HEARTBEAT_INTERVAL = 5.0    # 客户端心跳间隔（秒）
+
 HEARTBEAT_TIMEOUT = 15.0    # 超过该时间未收到心跳 → 标记离线
+
 _last_heartbeat_ts = 0
 
 # 房间可见性（十轮研究: 公开/好友/私密 - flackr/lobby 模式）
+
 ROOM_VISIBILITY = "public"   # public | private（好友模式简化合并到 private 用 IP 限制）
 
 # v9.0: 聊天历史（最近 20 条，启动器聊天页读取；研究: 状态文件轮询模式）
-_chat_history = []
 
+_chat_history = []
 
 def add_chat(from_name, text):
     """追加聊天记录（网络收到或本机发送时调用）"""
@@ -78,15 +95,15 @@ def add_chat(from_name, text):
         _write_state_file()
     except Exception:
         pass
-ROOM_PASSWORD = ""           # private 房间的加入密码（4-8 位）
-MAX_PLAYERS = 12             # fork: 12 per room (host + 11), same as the relay cap
 
+ROOM_PASSWORD = ""           # private 房间的加入密码（4-8 位）
+
+MAX_PLAYERS = 12             # fork: 12 per room (host + 11), same as the relay cap
 
 def _gen_room_code():
     """生成 6 位房间码（去易混淆字符 I/O/0/1）"""
     import random
     return "".join(random.choice(ROOM_CODE_ALPHABET) for _ in range(6))
-
 
 def _get_player_name():
     global _player_name
@@ -104,7 +121,6 @@ def _get_player_name():
     except Exception:
         pass
     return _player_name
-
 
 def _collect_local_addrs():
     """收集本机所有局域网地址（IPv4 + IPv6），借鉴 S4MP room_code 多地址格式。
@@ -136,7 +152,6 @@ def _collect_local_addrs():
     except Exception:
         return ""
 
-
 def _connection_health():
     """v9.23: 当前连接健康摘要（RTT + 质量评级，None=未测量）"""
     try:
@@ -145,7 +160,6 @@ def _connection_health():
                 "label": network.get_health_label()}
     except Exception:
         return {"rtt_ms": None, "label": 'not measured'}
-
 
 def _write_state_file():
     """写房间状态到文件（启动器 GUI 轮询读取）
@@ -199,7 +213,6 @@ def _write_state_file():
     except Exception as e:
         network._log("lobby state write error: {}".format(e))
 
-
 def _broadcast_state():
     """广播房间状态（主机 → 所有客户端）"""
     global _last_broadcast_state
@@ -223,41 +236,59 @@ def _broadcast_state():
     except Exception as e:
         network._log("lobby broadcast error: {}".format(e))
 
-
 def _notify(text):
     network._notify(text)
 
+def _my_game_version():
+    try:
+        from multimod import engine
+        return engine.game_version()
+    except Exception:
+        return ""
+
+def game_version_note(mine, theirs, who, mine_is_joiner=False):
+    """Two Sims 4 builds in one game desync in odd ways (objects, interactions, saves). Say so
+    once, in plain words. "" when they match or either build is unknown (an old mod doesn't send it). Pure."""
+    mine, theirs = str(mine or "").strip(), str(theirs or "").strip()
+    if not mine or not theirs or mine == theirs:
+        return ""
+    if mine_is_joiner:
+        return "Your Sims 4 is {} but the host's is {}. Update The Sims 4 so you both have the same version - different versions drift out of sync.".format(mine, theirs)
+    return "{}'s Sims 4 is {} but yours is {}. Different versions drift out of sync - ask them to update (or update yours).".format(who, theirs, mine)
 
 # ============ 主机侧事件 ============
 def on_client_connected(player_id, addr):
     """新客户端 TCP 连接（握手完成，等 hello）"""
     network._log("lobby: client {} connected, waiting hello".format(player_id))
 
-
 def on_client_disconnect(player_id):
     """客户端断开 → 移除成员 + 级联清理（v9.26: 补 travel/存档缓存——防悬挂等待）"""
-    global _members, _travel_acks, _recv_save_cache
-    with _members_lock:  # v9.26: 检查-修改原子化
+    global _recv_save_cache
+    global _travel_acks
+    with _members_lock:
         if player_id in _members:
             name = _members[player_id].get("name", "?")
             del _members[player_id]
             network._log("lobby: {} left the room".format(name))
-            _notify('{} left the room'.format(name))
+            try:
+                from multimod import living_world
+                if not any((m.get("name") == name for m in _members.values())):
+                    living_world.player_left(name)
+            except Exception:
+                pass
+
+            _notify("{} left the room".format(name))
             _broadcast_state()
-    # v9.26: 级联清理（Gemini 架构审查 #4——离线级联结算）
-    # 1. 旅行等待集剔除该成员——否则 len(travel_acks)==len(members) 永远不满足
     if player_id in _travel_acks:
         _travel_acks.discard(player_id)
         network._log("lobby: travel_acks cleaned for {}".format(player_id))
-        # 若剩下的成员已全部确认 → 继续推进旅行（复用 on_travel_ack 判定）
         try:
             if _travel_acks.issuperset(set(_members.keys())):
                 _travel_force_start()
         except Exception:
             pass
-    # 2. 存档接收缓存清空（防内存泄漏 + 历史数据污染下次同步）
-    _recv_save_cache.clear()
 
+    _recv_save_cache.clear()
 
 def add_host_self(visibility="public", password=""):
     """房主把自己加入房间列表 + 生成房间码 + 设置可见性（mp_host 时调用）"""
@@ -289,37 +320,36 @@ def add_host_self(visibility="public", password=""):
     network._log("lobby: host {} created room, code={}, visibility={}".format(
         _members[0]["name"], ROOM_CODE, ROOM_VISIBILITY))
 
-
 def on_hello(player_id, name, ip):
     """客户端发来 hello → 加入成员列表 + 广播"""
-    global _members
-    # v9.26: 成员 dict 检查-修改原子化（socket 线程 vs 主线程竞态——Gemini 架构审查 #3）
     with _members_lock:
-        # v9.25: 房间人数上限（防恶意握手内存膨胀/广播风暴）
-        if player_id not in _members and len(_members) >= MAX_PLAYERS:
-            network._log("lobby: room full, rejected {}".format(player_id))
-            if network._client_socket is not None:
-                network._send_json(network._client_socket,
-                                   {"type": "join_rejected", "reason": "room_full"})
-            return
-        # v9.25: 昵称清洗（长度 16 + 去控制字符——防刷屏/富文本混淆）
+        if player_id not in _members:
+            if len(_members) >= MAX_PLAYERS:
+                network._log("lobby: room full, rejected {}".format(player_id))
+                if network._client_socket is not None:
+                    network._send_json(network._client_socket, {'type':"join_rejected", 
+                     'reason':"room_full"})
+                return
         clean_name = (name or "").strip()[:16]
-        clean_name = "".join(c for c in clean_name if c.isprintable() and ord(c) >= 32)
-        _members[player_id] = {
-            "player_id": player_id,
-            "name": clean_name or 'Player {}'.format(player_id),
-            "ip": ip or "",
-            "ready": False,
-            "in_lot": False,
-            "is_host": False,
-            "online": True,
-            "last_seen": time.time(),
-        }
+        clean_name = "".join((c for c in clean_name if c.isprintable() and ord(c) >= 32))
+        _members[player_id] = {'player_id':player_id, 
+         'name':clean_name or "Player {}".format(player_id), 
+         'ip':ip or "", 
+         'ready':False, 
+         'in_lot':False, 
+         'is_host':False, 
+         'online':True, 
+         'last_seen':(time.time)()}
         joined_name = _members[player_id]["name"]
     network._log("lobby: {} joined room".format(joined_name))
-    _notify('{} joined the room'.format(joined_name))
-    _broadcast_state()
+    _notify("{} joined the room".format(joined_name))
+    try:
+        from multimod import living_world
+        living_world.player_joined(joined_name)
+    except Exception:
+        pass
 
+    _broadcast_state()
 
 # ============ M3d 增强: 心跳检测 ============
 def on_heartbeat(player_id):
@@ -330,7 +360,6 @@ def on_heartbeat(player_id):
             _members[player_id]["online"] = True
             network._log("lobby: {} back online".format(_members[player_id]["name"]))
             _broadcast_state()
-
 
 def check_heartbeats():
     """主机每 5s 检查成员心跳超时 → 标记离线（alarm 调用）"""
@@ -350,7 +379,6 @@ def check_heartbeats():
                 changed = True
     if changed:
         _broadcast_state()
-
 
 def start_heartbeat():
     """客户端开始心跳（每 5s 发 ping 给主机）"""
@@ -375,10 +403,10 @@ def start_heartbeat():
 # ============ M3d 增强: 存档自动传输（SimSync 模式） ============
 # 房主选择存档文件 → base64 分块发送 → 成员自动写入 Saves 目录
 # v7.0: 块大小 64KB（研究: Python TCP 64KB 高效分块）→ base64 后 ~89KB/包
-SAVES_DIR = os.path.join(os.path.expanduser("~"), "Documents", "Electronic Arts",
-                         "The Sims 4", "Saves")
-SAVE_CHUNK_SIZE = 64 * 1024  # 64KB 每块（研究推荐值）
 
+SAVES_DIR = _userdir.sims_path("Saves")
+
+SAVE_CHUNK_SIZE = 64 * 1024  # 64KB 每块（研究推荐值）
 
 def _pick_latest_save():
     """v9.20.1: 选 Saves 目录最新 .save 文件（排除 .bak/备份）"""
@@ -395,55 +423,86 @@ def _pick_latest_save():
         network._log("lobby pick save error: {}".format(e))
         return None
 
-
-def host_send_save_file(filename):
+def host_send_save_file(filename, save_as=None):
     """房主发送存档文件给所有客户端（base64 分块）
 
     filename: Saves 目录下的文件名，如 Slot_00000001.save
     返回: (bool ok, str desc)
     """
     try:
-        import base64
-        import hashlib
+        import base64, hashlib
         path = os.path.join(SAVES_DIR, filename)
+        out_name = save_as or s4om_slot_name(_host_name(), filename)
         if not os.path.exists(path):
-            return False, 'Save not found: {}'.format(path)
+            return (False, "Save not found: {}".format(path))
         with open(path, "rb") as f:
             raw = f.read()
-        # v9.4: 整体 SHA256（研究: S3 per-part checksum——防网络损坏静默入库）
         file_sha = hashlib.sha256(raw).hexdigest()
         b64 = base64.b64encode(raw).decode("ascii")
         total_chunks = (len(b64) + SAVE_CHUNK_SIZE - 1) // SAVE_CHUNK_SIZE
-        network._log("lobby: sending save {} ({}B, {} chunks, sha={})".format(
-            filename, len(raw), total_chunks, file_sha[:12]))
-        _notify('Sending save {} ({:.1f}KB)...'.format(filename, len(raw) / 1024))
+        network._log("lobby: sending save {} ({}B, {} chunks, sha={})".format(filename, len(raw), total_chunks, file_sha[:12]))
+        _notify("Sending save {} ({:.1f}KB)...".format(filename, len(raw) / 1024))
         for i in range(total_chunks):
             chunk = b64[i * SAVE_CHUNK_SIZE:(i + 1) * SAVE_CHUNK_SIZE]
             network._broadcast({
-                "type": "save_chunk",
-                "filename": filename,
-                "index": i,
-                "total": total_chunks,
-                "data": chunk,
-                "sha256": file_sha,  # v9.4: 接收端校验
-            })
-        network._broadcast({
-            "type": "save_chunk_done",
-            "filename": filename,
-            "total_bytes": len(raw),
-            "sha256": file_sha,
-        })
-        _notify('Save sent!')
+              'type': "save_chunk",
+              'filename': out_name,
+              'index': i,
+              'total': total_chunks,
+              'data': chunk,
+              'sha256': file_sha})
+
+        network._broadcast({'type':"save_chunk_done", 
+         'filename':out_name, 
+         'total_bytes':len(raw), 
+         'sha256':file_sha})
+        _notify("Save sent!")
         network._log("lobby: save send complete {}".format(filename))
-        return True, 'Sent {}'.format(filename)
+        return (
+         True, "Sent {}".format(filename))
     except Exception as e:
         network._log("lobby send save error: {}".format(e))
-        return False, str(e)
+        return (
+         False, str(e))
 
-
-# 客户端接收缓存: filename -> {chunks: {}, total, bytes}
 _recv_save_cache = {}
 
+SYNC_SLOT_NAME = "Slot_0000ff40.save"
+
+S4OM_SLOT_BASE = 1392508928
+
+def s4om_slot_name(host_name, filename):
+    """Pure (tested). The slot a host's save is stored under on joiners. The Sims only lists
+    Slot_<8 hex>.save, so it is a number: stable for the same host + save (re-syncs update it in
+    place), and nowhere near the sequential numbers the game gives people's own saves."""
+    import hashlib as _h
+    h = _h.sha256("{}|{}".format(str(host_name).lower(), str(filename).lower()).encode("utf-8")).digest()
+    return "Slot_{:08x}.save".format(S4OM_SLOT_BASE | int.from_bytes(h[:3], "big"))
+
+def is_s4om_slot(filename):
+    m = re.match("^slot_([0-9a-f]{8})\\.save$", str(filename).lower())
+    return bool(m) and int(m.group(1), 16) & 4278190080 == S4OM_SLOT_BASE
+
+def _host_name():
+    try:
+        return str((network._load_launcher_config() or {}).get("name") or "host")
+    except Exception:
+        return "host"
+
+def landing_name(filename, existing_sha, new_sha, listing):
+    """Pure (tested). Where a received save is written: the same name if nothing is there (or it is
+    S4OM's own sync slot); None if an identical save is already there; otherwise a free slot
+    (0x100 up) so the player's own save is never overwritten."""
+    if existing_sha is None or filename.lower() == SYNC_SLOT_NAME.lower() or is_s4om_slot(filename):
+        return filename
+    if existing_sha == new_sha:
+        return
+    used = set((str(f).lower() for f in listing))
+    n = 256
+    while "slot_{:08x}.save".format(n) in used:
+        n += 1
+
+    return "Slot_{:08x}.save".format(n)
 
 def _safe_save_filename(filename):
     """v9.25: 存档文件名安全校验（防路径穿越——../../ 任意文件写入 RCE）"""
@@ -454,7 +513,6 @@ def _safe_save_filename(filename):
         network._log("lobby: invalid save filename rejected: {}".format(name))
         return None
     return name
-
 
 def _resend_save_chunks(filename, missing_indices):
     """v9.5: 房主重发缺失存档块（研究: MAVLink FTP missing chunks re-request）"""
@@ -481,7 +539,6 @@ def _resend_save_chunks(filename, missing_indices):
         network._log("lobby: resent {} missing chunks of {}".format(len(missing_indices), filename))
     except Exception as e:
         network._log("lobby resend error: {}".format(e))
-
 
 def on_save_chunk(data):
     """客户端收到存档块 → 缓存
@@ -520,17 +577,14 @@ def on_save_chunk(data):
     if total > 0 and got % max(1, total // 4) == 0:
         network._log("lobby: save recv {}/{} chunks".format(got, total))
 
-
 def on_save_chunk_done(data):
     """客户端收完所有块 → 拼装 + SHA256 校验 + 写入 Saves
 
     v9.5: 缺块时请求重传缺失块（研究: MAVLink FTP missing chunks re-request），
     而非直接失败——网络丢包可自动恢复
     """
-    global _recv_save_cache
     try:
-        import base64
-        import hashlib
+        import base64, hashlib
         filename = _safe_save_filename(data.get("filename", ""))
         if filename is None:
             return
@@ -541,75 +595,71 @@ def on_save_chunk_done(data):
         chunks = cache["chunks"]
         if len(chunks) < total:
             missing = [i for i in range(total) if i not in chunks]
-            network._log("lobby: save recv missing chunks {} ({}/{})".format(
-                missing[:5], len(chunks), total))
-            # v9.5: 请求重传缺失块（最多 3 次，防无限循环）
+            network._log("lobby: save recv missing chunks {} ({}/{})".format(missing[:5], len(chunks), total))
             _recv_save_cache[filename]["retries"] = cache.get("retries", 0) + 1
             if cache.get("retries", 0) < 3:
-                _notify('Parts of the save are missing - asking for them again ({} parts)...'.format(len(missing)))
+                _notify("Parts of the save are missing - asking for them again ({} parts)...".format(len(missing)))
                 if network._client_socket is not None:
-                    network._send_json(network._client_socket, {
-                        "type": "save_resend_req", "filename": filename,
-                        "missing": missing[:20], "total": total})
+                    network._send_json(network._client_socket, {'type':"save_resend_req", 
+                     'filename':filename,  'missing':missing[:20], 
+                     'total':total})
                 return
-            else:
-                _notify('The save is still incomplete - ask the host to send it again')
-                _recv_save_cache.pop(filename, None)
-                return
-        # v9.4: 校验块连续性（防丢块错位）
-        if sorted(chunks.keys()) != list(range(total)):
-            network._log("lobby: save recv chunk gap! {} != 0..{}".format(
-                sorted(chunks.keys()), total - 1))
-            _notify('Parts of the save are missing - ask the host to send it again')
+            _notify("The save is still incomplete - ask the host to send it again")
+            _recv_save_cache.pop(filename, None)
             return
-        b64 = "".join(chunks[i] for i in sorted(chunks.keys()))
+        if sorted(chunks.keys()) != list(range(total)):
+            network._log("lobby: save recv chunk gap! {} != 0..{}".format(sorted(chunks.keys()), total - 1))
+            _notify("Parts of the save are missing - ask the host to send it again")
+            return
+        b64 = "".join((chunks[i] for i in sorted(chunks.keys())))
         raw = base64.b64decode(b64)
-        # v9.4: SHA256 完整性校验（研究: S3 checksum verify——防网络损坏静默入库）
         expect_sha = data.get("sha256", "")
         actual = ""
         if expect_sha:
             actual = hashlib.sha256(raw).hexdigest()
             if actual != expect_sha:
-                network._log("lobby: save SHA mismatch! {} != {}".format(
-                    actual[:12], expect_sha[:12]))
-                _notify('The save failed its check (may be damaged) - ask the host to send it again')
+                network._log("lobby: save SHA mismatch! {} != {}".format(actual[:12], expect_sha[:12]))
+                _notify("The save failed its check (may be damaged) - ask the host to send it again")
                 return
-        # 写入 Saves 目录（备份旧文件）
         os.makedirs(SAVES_DIR, exist_ok=True)
+        existing_sha = None
         dest = os.path.join(SAVES_DIR, filename)
         if os.path.exists(dest):
-            os.replace(dest, dest + ".bak")
-        with open(dest, "wb") as f:
-            f.write(raw)
+            with open(dest, "rb") as f:
+                existing_sha = hashlib.sha256(f.read()).hexdigest()
+        new_sha = hashlib.sha256(raw).hexdigest()
+        landing = landing_name(filename, existing_sha, new_sha, os.listdir(SAVES_DIR))
+        if landing is not None and landing != filename:
+            network._log("lobby: {} already exists here and is different - storing the host's as {}".format(filename, landing))
+            _notify("You already have a different save called {} - yours is untouched. The host's game was saved as {}.".format(filename, landing))
+        if landing is None:
+            network._log("lobby: {} is identical to the host's - nothing to write".format(filename))
+        else:
+            dest = os.path.join(SAVES_DIR, landing)
+            if os.path.exists(dest):
+                os.replace(dest, dest + ".bak")
+            with open(dest, "wb") as f:
+                f.write(raw)
         _recv_save_cache.pop(filename, None)
-        _notify('Save received: {} ({:.1f}KB, verified ✅)'.format(filename, len(raw) / 1024))
-        network._log("lobby: save received and written {} ({}B, sha={})".format(
-            filename, len(raw), actual[:12] if expect_sha else "n/a"))
-        # v9.20.1: 提示重新加载——游戏运行中无法热切换存档，
-        # 文件已就位但必须回主菜单读档才能生效（修复"同步了但游戏里没变"的另一半）
-        _notify('Save synced! Go back to the main menu and load save {}'.format(filename))
-        # 同步完成
+        network._log("Save received: {} ({:.1f}KB, verified)".format(filename, len(raw) / 1024))
+        network._log("lobby: save received and written {} ({}B, sha={})".format(filename, len(raw), actual[:12] if expect_sha else "n/a"))
+        _notify("Got the host's latest game - S4OM reloads it for you in a moment.")
         if network._client_socket is not None:
-            network._send_json(network._client_socket, {"type": "save_sync_ack", "ok": True, "filename": filename})
+            network._send_json(network._client_socket, {'type':"save_sync_ack",  'ok':True,  'filename':filename})
     except Exception as e:
         network._log("lobby save write error: {}".format(e))
         _notify("Couldn't write the save: {}".format(e))
 
+MIGRATION_CLAIM_PATH = _userdir.sims_path("Mods", "mp_migration_claim.json")
 
-# ============ M3d 增强: 主机迁移（Unity EOS 5s 机制，简化文件协调版） ============
-# 房主掉线 → 所有客户端检测到断开 → 写 claim 文件（player_id + 时间戳）
-# → 3s 后读文件：player_id 最小者成为新房主 → 开始监听 → 其他客户端重连
-MIGRATION_CLAIM_PATH = os.path.join(os.path.expanduser("~"), "Documents", "Electronic Arts",
-                                    "The Sims 4", "Mods", "mp_migration_claim.json")
 MIGRATION_SETTLE_SEC = 3.0   # 竞选等待时间（Unity 建议 5s，我们简化 3s）
-_last_known_host_ip = ""
 
+_last_known_host_ip = ""
 
 def set_host_ip(ip):
     """记录主机 IP（客户端用于迁移重连）"""
     global _last_known_host_ip
     _last_known_host_ip = ip or ""
-
 
 def schedule_reconnect_with_backoff(broken_sock=None):
     """v7.0: 断线自动重连（指数退避 1.5s→60s，最多 20 次）
@@ -621,10 +671,8 @@ def schedule_reconnect_with_backoff(broken_sock=None):
     本调度必须退出，绝不能 close 新连接（旧 bug：cli1 断线触发的
     调度 1.5s 后醒来误杀 cli2 的新连接）。
     """
-    global _last_known_host_ip, _reconnect_in_progress
-    # v9.20.4: 防重入——断线风暴时 _recv_loop 每次断线都调度新循环,
-    # 旧循环未结束又起新循环 → attempts 永远 1/20, 指数退避从未累计。
-    # 已有循环在跑则跳过 (循环内部会持续重试直到成功/耗尽)。
+    global _reconnect_gen
+    global _reconnect_in_progress
     if _reconnect_in_progress:
         network._log("reconnect: loop already running, skip")
         return
@@ -632,6 +680,7 @@ def schedule_reconnect_with_backoff(broken_sock=None):
     try:
         import threading
         from multimod import network as net
+        my_gen = _reconnect_gen
 
         def _reconnect_loop():
             global _reconnect_in_progress
@@ -640,70 +689,57 @@ def schedule_reconnect_with_backoff(broken_sock=None):
                 attempts = 0
                 while attempts < 20:
                     time.sleep(delay)
-                    # v9.19.1: socket 已被替换 → 已恢复，退出（防止误杀新连接）
-                    # v9.20.4: 修复回归——断线后 _client_socket 被清理为 None,
-                    # None is not broken_sock 恒为 True → 首次检查就误判"已替换"而退出,
-                    # 导致客机断线后永不重连(离线收不到主机广播)。只有 _client_socket
-                    # 是"有效的新连接"(非 None 且非断线 socket) 才允许退出。
-                    if (broken_sock is not None
-                            and net._client_socket is not None
-                            and net._client_socket is not broken_sock):
+                    if my_gen != _reconnect_gen or not getattr(net, "_want_session", True):
+                        network._log("reconnect: cancelled (joined another game / left)")
+                        return
+                    if broken_sock is not None and net._client_socket is not None and net._client_socket is not broken_sock:
                         network._log("reconnect: socket replaced, skipping")
                         return
                     if net._client_socket is not None:
-                        # v9.19: 如果网络线程已停止 → 强制允许重连
                         if net._network_thread and net._network_thread.is_alive():
                             network._log("reconnect: already connected, skipping")
                             return
-                        # 线程死了但 socket 还在（recv_loop 未及时清理）→ 重置后重连
                         network._log("reconnect: stale socket, resetting")
                         try:
                             net._client_socket.close()
                         except Exception:
                             pass
+
                         net._client_socket = None
                     host_ip = _last_known_host_ip or claim_get_host_ip()
                     if not host_ip or host_ip == "127.0.0.1":
-                        network._log("reconnect: no host ip")
+                        network._log("reconnect: no host ip - the host left, playing on alone")
+                        net._want_session = False
+                        _notify("The host left the game - you can keep playing on your own. Join again from the S4OM launcher when they're back.")
                         return
                     attempts += 1
                     try:
-                        network._log("reconnect attempt {}/{} to {}:{} (delay {:.1f}s)".format(
-                            attempts, 20, host_ip, net.DEFAULT_PORT, delay))
-                        # fork: reuse the normal connect path. The old inline reconnect
-                        # sent a hello with no client_nonce/password, so no session key
-                        # was derived and every signed frame afterwards was dropped; it
-                        # also always dialled host_ip directly, which can't work for
-                        # relay rooms (host_ip is then the room code).
+                        network._log("reconnect attempt {}/{} to {}:{} (delay {:.1f}s)".format(attempts, 20, host_ip, net.DEFAULT_PORT, delay))
                         import threading as _t
-                        _t.Thread(target=net._client_thread, args=(host_ip, net.DEFAULT_PORT),
-                                  daemon=True).start()
+                        _t.Thread(target=(net._client_thread), args=(host_ip, net.DEFAULT_PORT), daemon=True).start()
                         for _ in range(50):
                             if net._client_socket is not None:
                                 break
                             time.sleep(0.1)
+
                         if net._client_socket is None:
                             raise RuntimeError("connect did not complete")
                         network._log("reconnect: connected to {}".format(host_ip))
-                        _notify('Reconnected to the host')
+                        _notify("Reconnected to the host")
                         return
                     except Exception as e:
                         network._log("reconnect attempt failed: {}".format(e))
-                    # v9.4: 指数退避 + jitter（研究: AWS 防 thundering herd——
-                    # 多客户端同步重试会同时冲击主机，随机 ±20% 打散）
-                    # 1.5 → 3 → 6 → 12 → 24 → 48 → 60 cap
+
                     delay = min(delay * 2, 60.0) * random.uniform(0.8, 1.2)
-                # 重连失败 → 触发主机迁移竞选
+
                 network._log("reconnect exhausted, triggering host migration")
                 on_host_disconnect()
             finally:
-                # v9.20.4: 循环结束(成功/耗尽/退出) → 允许下次调度
                 _reconnect_in_progress = False
 
         threading.Thread(target=_reconnect_loop, daemon=True).start()
     except Exception as e:
         network._log("reconnect schedule error: {}".format(e))
-
 
 def on_host_disconnect():
     """客户端检测到房主断开 → 触发迁移竞选"""
@@ -746,7 +782,6 @@ def on_host_disconnect():
     except Exception as e:
         network._log("migration claim error: {}".format(e))
 
-
 def _complete_migration():
     """竞选结算：player_id 最小者成为新房主"""
     global _members
@@ -771,7 +806,6 @@ def _complete_migration():
             _schedule_reconnect()
     except Exception as e:
         network._log("migration complete error: {}".format(e))
-
 
 def _become_new_host(claim):
     """成为新房主：切换角色 + 开服务器 + 广播"""
@@ -819,7 +853,6 @@ def _become_new_host(claim):
     except Exception as e:
         network._log("become new host error: {}".format(e))
 
-
 def _schedule_reconnect():
     """非新房主：延迟重连到新房主（用 claim 里的 IP）"""
     try:
@@ -846,32 +879,47 @@ def _schedule_reconnect():
     except Exception as e:
         network._log("schedule reconnect error: {}".format(e))
 
+def cancel_reconnect():
+    """Explicit join: stop any reconnect loop and forget a stale host-migration claim."""
+    global _reconnect_gen
+    _reconnect_gen += 1
+    try:
+        if os.path.exists(MIGRATION_CLAIM_PATH):
+            if time.time() - os.path.getmtime(MIGRATION_CLAIM_PATH) > CLAIM_MAX_AGE:
+                os.remove(MIGRATION_CLAIM_PATH)
+                network._log("lobby: removed stale migration claim")
+    except Exception:
+        pass
 
 def claim_get_host_ip():
     """从竞选文件读原主机 IP"""
     try:
         if os.path.exists(MIGRATION_CLAIM_PATH):
-            with open(MIGRATION_CLAIM_PATH, "r", encoding="utf-8") as f:
-                return json.load(f).get("host_ip", "")
+            if time.time() - os.path.getmtime(MIGRATION_CLAIM_PATH) <= CLAIM_MAX_AGE:
+                with open(MIGRATION_CLAIM_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f).get("host_ip", "")
     except Exception:
         pass
-    return ""
 
+    return ""
 
 def leave_room():
     """本机离开房间（发 leave 给主机 + 清理本地）"""
-    global _members, _save_sync_phase, _start_granted
+    global _members
+    global _save_sync_phase
+    global _start_granted
     try:
-        if not network._is_host and network._client_socket is not None:
-            network._send_json(network._client_socket, {"type": "leave"})
+        if not network._is_host:
+            if network._client_socket is not None:
+                network._send_json(network._client_socket, {"type": "leave"})
         _members = {}
         _save_sync_phase = "idle"
         _start_granted = False
+        network._want_session = False
         _write_state_file()
         network._log("lobby: left room")
     except Exception as e:
         network._log("lobby leave error: {}".format(e))
-
 
 def on_leave(player_id):
     """成员离开 → 移除 + 广播"""
@@ -882,7 +930,6 @@ def on_leave(player_id):
         network._log("lobby: {} left".format(name))
         _notify('{} left the room'.format(name))
         _broadcast_state()
-
 
 def kick_member(player_id):
     """房主踢人：通知对方断开 + 移除"""
@@ -901,7 +948,6 @@ def kick_member(player_id):
     _notify('Removed {} from the room'.format(name))
     _broadcast_state()
     return True
-
 
 def promote_member(player_id):
     """房主转交房主身份（简化：标记新房主）"""
@@ -923,7 +969,9 @@ def promote_member(player_id):
 # ============ v8.3: 旅行双端确认（研究: S4MP travel 黑屏修复） ============
 # 场景切换（旅行）前双端确认：房主发起 → 成员确认 → 双端同时加载
 # 避免 S4MP 经典 bug：一人先加载 → 另一人黑屏 / KeyError:2
+
 _travel_pending = False
+
 _travel_acks = set()
 
 
@@ -933,24 +981,32 @@ _travel_acks = set()
 #   2) 抵达报告：客户端到新场景后广播 travel_arrived（带 zone_id）
 #   3) 全员抵达确认：房主收齐后广播 travel_all_arrived → 双方确认都到了
 #   4) 超时恢复：go 后 90s 未到齐 → travel_missing 提示（防黑屏/无限加载）
+
 _travel_active = False      # 旅行进行中（场景切换锁定）
+
 _travel_arrived = set()     # 已抵达新场景的成员（房主侧）
+
 _travel_go_ts = 0           # go 广播时间（超时检测用）
+
 _travel_auto_ack = True     # v9.22: 客机自动确认旅行（默认开——原实现要求每人
                             # 手输 mp_travel_ack，实际对局没人输 → 全靠 10s 超时兜底）
+
 _travel_board = None        # v9.22: 客机侧镜像的旅行状态板（lobby 广播携带）
+
 _travel_saved_speed = 1     # v9.23: 旅行前主机时钟速度（到齐后恢复——加载期间
                             # 客机无法处理 tick，锁时钟防时间漂移，S4MP 加载黑屏
                             # 场景的经典对策）
+
 _follow_travel = True       # v9.24: 游戏内旅行自动跟随（主机 zone 变化 → 全员
                             # 自动切同一 zone——反编译 sims.visit_target_sim 确认
                             # sim_info.send_travel_switch_to_zone_op 为原生入口）
+
 _travel_gen = 0             # v9.25: 旅行代次——连续旅行/快速切场景时，旧旅行的
                             # 30/60/90s Timer 还挂着；新旅行开始后旧 Timer 触发会
                             # 提前解锁新旅行/乱发 travel_missing/错乱恢复时钟。
                             # 每个 Timer 捕获启动时的代次，触发时代次不匹配即 no-op。
-_travel_timers = []         # v9.25: 当前旅行的分级 Timer（集中取消用）
 
+_travel_timers = []         # v9.25: 当前旅行的分级 Timer（集中取消用）
 
 def _cancel_travel_timers():
     """v9.25: 集中取消当前旅行的所有分级 Timer。
@@ -965,7 +1021,6 @@ def _cancel_travel_timers():
             t.cancel()
         except Exception:
             pass
-
 
 def _start_travel_timers():
     """v9.25: 统一启动 30/60/90s 分级超时（代次捕获——旧代次触发时 no-op）。
@@ -987,7 +1042,6 @@ def _start_travel_timers():
             t.start()
     except Exception as e:
         network._log("travel timers start error: {}".format(e))
-
 
 def on_host_zone_changed(new_zone_id):
     """v9.24: 主机游戏内旅行被检测到（current_zone_id 变化）→ 全员自动跟随。
@@ -1030,19 +1084,23 @@ def on_host_zone_changed(new_zone_id):
     _start_travel_timers()
     _write_state_file()
 
-
 def on_travel_follow(data):
     """v9.24: 客机收到主机旅行跟随 → 自动切换到同一 zone（原生 API）"""
     global _travel_active
     _travel_active = True
     zone_id = data.get("zone_id")
-    network._notify('🧳 The host is travelling - following them to the same place...')
+    try:
+        from multimod import world_flow
+        world_flow._following = True
+    except Exception:
+        pass
+
+    network._notify("🧳 The host is travelling - following them to the same place...")
     network._log("lobby: travel_follow received zone={}".format(zone_id))
     ok = _auto_travel_to_zone(zone_id)
     if not ok:
         network._notify("⚠️ Please travel to the host's new location yourself (auto-follow failed - see the log)")
     _write_state_file()
-
 
 def _auto_travel_to_zone(zone_id):
     """v9.24: 客机自动跟随旅行——游戏原生 zone 切换。
@@ -1065,20 +1123,28 @@ def _auto_travel_to_zone(zone_id):
         network._log("auto travel error: {}".format(e))
         return False
 
-
 def _travel_restore_clock():
     """v9.23: 旅行结束后恢复主机时钟速度（广播 saved speed，全员同步恢复）"""
     try:
         _cb = getattr(network, "_send_clock_broadcast", None)
         if _cb is not None:
-            _cb(_travel_saved_speed)
-            network._log("lobby: travel clock restored -> {}".format(_travel_saved_speed))
+            speed = _travel_saved_speed
+            if network._is_host:
+                try:
+                    from multimod import clock_sync
+                    sp = clock_sync.get_current_speed()
+                    if sp is not None:
+                        speed = int(sp)
+                except Exception:
+                    pass
+
+            _cb(speed)
+            network._log("lobby: travel clock restored -> {}".format(speed))
     except Exception as e:
         try:
             network._log("lobby: travel clock restore error: {}".format(e))
         except Exception:
             pass
-
 
 def auto_report_arrival():
     """v9.22: 进图时自动上报抵达（network._check_lot_status 调用）。
@@ -1091,7 +1157,6 @@ def auto_report_arrival():
     report_travel_arrived()
     return True
 
-
 def toggle_travel_auto_ack():
     """v9.22: 切换客机自动确认旅行（启动器按钮 / mp_travel_auto 命令）"""
     global _travel_auto_ack
@@ -1099,7 +1164,6 @@ def toggle_travel_auto_ack():
     _notify('Auto-confirm travel: {}'.format('on' if _travel_auto_ack else 'off'))
     _write_state_file()
     return _travel_auto_ack
-
 
 def host_start_travel():
     """房主发起旅行（广播 travel_req，要求成员确认）"""
@@ -1117,7 +1181,6 @@ def host_start_travel():
     import threading
     threading.Timer(10.0, _travel_force_start).start()
 
-
 def on_travel_ack(player_id):
     """成员确认旅行就绪"""
     global _travel_acks
@@ -1128,7 +1191,6 @@ def on_travel_ack(player_id):
     network._log("lobby: travel ack from {}".format(player_id))
     if _travel_acks.issuperset(set(_members.keys())):
         _travel_force_start()
-
 
 def _travel_force_start():
     """全部确认（或超时）→ 通知所有成员开始加载"""
@@ -1166,7 +1228,6 @@ def _travel_force_start():
     _start_travel_timers()
     _write_state_file()
 
-
 def report_travel_arrived(zone_id=None):
     """本机已到达新场景（游戏内场景切换完成时调用）
 
@@ -1188,7 +1249,6 @@ def report_travel_arrived(zone_id=None):
                 "type": "travel_arrived", "player": pid, "zone_id": zone_id})
             network._log("lobby: sent travel_arrived zone={}".format(zone_id))
 
-
 def on_travel_arrived(player_id, zone_id=None):
     """房主收到成员抵达报告"""
     global _travel_arrived
@@ -1203,7 +1263,6 @@ def on_travel_arrived(player_id, zone_id=None):
     network._log("lobby: member {} arrived zone={}".format(player_id, zone_id))
     _broadcast_state()
     _check_travel_all_arrived()
-
 
 def _check_travel_all_arrived():
     """房主：全员抵达 → 广播 travel_all_arrived（解除旅行锁定）"""
@@ -1227,7 +1286,6 @@ def _check_travel_all_arrived():
             network._log("travel snapshot refresh error: {}".format(e))
         _travel_restore_clock()  # v9.23: 到齐后恢复时钟（快照已对齐新场景）
         _write_state_file()
-
 
 def _travel_progress_check(final, gen=None):
     """房主：go 后分级检查（v9.22: 30/60s 进度提示 / 90s 超时解除锁定）
@@ -1264,14 +1322,12 @@ def _travel_progress_check(final, gen=None):
     _travel_restore_clock()  # v9.23: 超时解锁也要恢复时钟
     _write_state_file()
 
-
 def on_travel_all_arrived(data):
     """客户端收到全员抵达 → 解除旅行锁定"""
     global _travel_active
     _travel_active = False
     _notify('✅ Everyone has arrived - carry on playing!')
     network._log("lobby: travel_all_arrived received")
-
 
 def on_travel_missing(data):
     """客户端收到旅行超时提示"""
@@ -1281,11 +1337,9 @@ def on_travel_missing(data):
     _notify("⚠️ Some players didn't arrive: {} - game unlocked".format(", ".join(missing)))
     network._log("lobby: travel_missing received")
 
-
 def is_travel_active():
     """旅行锁定查询（sync.py 场景切换期间暂停位置同步）"""
     return _travel_active
-
 
 def on_travel_req(data):
     """客户端收到旅行请求 → 自动确认（v9.22 默认）或提示手动确认"""
@@ -1300,14 +1354,12 @@ def on_travel_req(data):
         _notify('The host wants to travel together: type mp_travel_ack to confirm')
         network._log("lobby: travel_req received (manual ack mode)")
 
-
 def on_travel_go(data):
     """客户端收到放行 → 提示可以旅行了 + 进入锁定"""
     global _travel_active
     _travel_active = True
     _notify("✅ Everyone's ready - travel together with the host!")
     network._log("lobby: travel_go received")
-
 
 def on_ready(player_id, ready):
     """客户端准备/取消 → 更新状态 + 广播"""
@@ -1316,14 +1368,17 @@ def on_ready(player_id, ready):
         network._log("lobby: {} ready={}".format(_members[player_id]["name"], ready))
         _broadcast_state()
 
-
 def on_in_lot(player_id, in_lot):
     """客户端报告进图/离开 → 更新状态 + 广播"""
     if player_id in _members:
         _members[player_id]["in_lot"] = bool(in_lot)
         network._log("lobby: {} in_lot={}".format(_members[player_id]["name"], in_lot))
         _broadcast_state()
-
+        try:
+            from multimod import start_hold
+            start_hold.check()
+        except Exception as e:
+            network._log("start hold check error: {}".format(e))
 
 def all_clients_ready():
     """所有非房主成员是否都已准备"""
@@ -1332,14 +1387,12 @@ def all_clients_ready():
         return True  # 无客户端
     return all(m["ready"] for m in clients)
 
-
 def all_clients_in_lot():
     """所有非房主成员是否都已进入家庭地段"""
     clients = [m for m in _members.values() if not m["is_host"]]
     if not clients:
         return True
     return all(m["in_lot"] for m in clients)
-
 
 # ============ 存档同步流程 ============
 def host_start_save_sync(filename=None):
@@ -1385,7 +1438,6 @@ def host_start_save_sync(filename=None):
     _broadcast_state()
     return True
 
-
 def on_save_sync_ack(player_id):
     """客户端确认收到同步请求"""
     global _save_sync_phase, _start_granted
@@ -1402,7 +1454,6 @@ def on_save_sync_ack(player_id):
             _notify('Save synced! Everyone can start the game now')
             network._log("lobby: save sync done, start granted")
             _broadcast_state()
-
 
 def host_start_game():
     """房主开始游戏（要求：存档同步完成 + 所有成员进图）"""
@@ -1425,7 +1476,6 @@ def host_start_game():
     network._log("lobby: game started")
     return True
 
-
 # ============ 本地状态上报 ============
 def report_my_ready(ready):
     """本机准备/取消（客机 → 发给主机；主机 → 自己更新）"""
@@ -1441,26 +1491,29 @@ def report_my_ready(ready):
             network._send_json(network._client_socket, {"type": "ready", "ready": bool(ready)}, prio=0)
             network._log("lobby: sent ready={}".format(ready))
 
-
 def report_my_in_lot(in_lot):
     """本机进图状态（客机 → 发给主机；主机 → 自己更新 + 检查门槛）"""
-    global _members
     pid = network._my_player_id
     if pid in _members:
         _members[pid]["in_lot"] = bool(in_lot)
     if network._is_host:
         network._log("lobby: host in_lot={}".format(in_lot))
         _broadcast_state()
-        # 进图门槛：房主进入家庭地段时检查成员是否全进
-        if in_lot and not all_clients_in_lot():
-            missing = [m["name"] for m in _members.values() if not m["is_host"] and not m["in_lot"]]
-            _notify('Waiting for players to load in: {}'.format(", ".join(missing)))
-            network._log("lobby: host in lot, waiting: {}".format(missing))
-    else:
-        if network._client_socket is not None:
-            network._send_json(network._client_socket, {"type": "in_lot", "in_lot": bool(in_lot)})
-            network._log("lobby: sent in_lot={}".format(in_lot))
+        held = False
+        if in_lot:
+            try:
+                from multimod import start_hold
+                held = start_hold.on_host_in_lot()
+            except Exception as e:
+                network._log("start hold error: {}".format(e))
 
+        if in_lot and not held and not all_clients_in_lot():
+            missing = [m["name"] for m in _members.values() if not m["is_host"] and not m["in_lot"]]
+            _notify("Waiting for players to load in: {}".format(", ".join(missing)))
+            network._log("lobby: host in lot, waiting: {}".format(missing))
+    elif network._client_socket is not None:
+        network._send_json(network._client_socket, {'type':"in_lot",  'in_lot':bool(in_lot)})
+        network._log("lobby: sent in_lot={}".format(in_lot))
 
 # ============ 消息处理（network._process_incoming 分发）============
 def process_message(data, sender_pid=None):
@@ -1498,6 +1551,10 @@ def process_message(data, sender_pid=None):
                     network._send_json(sock, {"type": "join_rejected", "reason": 'Wrong room password'})
                     return
                 on_hello(sender_pid, name, ip)
+                note = game_version_note(_my_game_version(), data.get("game"), name)
+                if note:
+                    network._log("lobby: " + note)
+                    _notify(note)
                 # v9.16: 握手密钥派生（研究: HKDF RFC 5869）
                 # host 收到 client_nonce + 自己的 host_nonce → 派生会话密钥 → 回发 host_nonce
                 # v9.22: host_nonce 改按连接查询（_conn_nonces）——原用模块级全局
@@ -1515,7 +1572,8 @@ def process_message(data, sender_pid=None):
                     sock = network._clients[sender_pid][0]
                     _h_nonce = network._conn_nonces.get(sender_pid) or b""
                     network._send_json(sock, {"type": "welcome", "player_id": sender_pid,
-                                              "host_nonce": _h_nonce.decode("utf-8")})
+                                              "host_nonce": _h_nonce.decode("utf-8"),
+                                              "game": _my_game_version()})
                     network._send_json(sock, {"type": "lobby", "members": list(_members.values()),
                                               "save_sync_phase": _save_sync_phase,
                                               "start_granted": _start_granted,
@@ -1567,6 +1625,10 @@ def process_message(data, sender_pid=None):
             except Exception as e:
                 network._log("hmac derive error: {}".format(e))
             network._log("lobby: got player_id={}".format(network._my_player_id))
+            note = game_version_note(_my_game_version(), data.get("game"), "the host", mine_is_joiner=True)
+            if note:
+                network._log("lobby: " + note)
+                _notify(note)
             # 把本机加入本地成员列表（显示自己）
             _members[network._my_player_id] = {
                 "player_id": network._my_player_id,
@@ -1718,7 +1780,6 @@ def process_message(data, sender_pid=None):
     except Exception as e:
         network._log("lobby process error: {}".format(e))
 
-
 # ============ 命令 ============
 @sims4.commands.Command('mp_ready', command_type=sims4.commands.CommandType.Live)
 def mp_ready(_connection=None):
@@ -1726,13 +1787,11 @@ def mp_ready(_connection=None):
     report_my_ready(True)
     _safe_output(_connection, '✅ Ready')
 
-
 @sims4.commands.Command('mp_unready', command_type=sims4.commands.CommandType.Live)
 def mp_unready(_connection=None):
     """取消准备"""
     report_my_ready(False)
     _safe_output(_connection, 'No longer ready')
-
 
 @sims4.commands.Command('mp_syncsave', command_type=sims4.commands.CommandType.Live)
 def mp_syncsave(filename=None, _connection=None):
@@ -1746,7 +1805,6 @@ def mp_syncsave(filename=None, _connection=None):
         return
     ok = host_start_save_sync(filename)
     _safe_output(_connection, 'Save sync requested' if ok else "Couldn't sync the save (not everyone is ready)")
-
 
 @sims4.commands.Command('mp_saves', command_type=sims4.commands.CommandType.Live)
 def mp_saves(_connection=None):
@@ -1764,7 +1822,6 @@ def mp_saves(_connection=None):
         output("Couldn't read the Saves folder: {}".format(e))
     network._log("mp_saves listed")
 
-
 @sims4.commands.Command('mp_start', command_type=sims4.commands.CommandType.Live)
 def mp_start(_connection=None):
     """房主：开始游戏（需存档同步完成 + 所有成员进图）"""
@@ -1773,7 +1830,6 @@ def mp_start(_connection=None):
         return
     ok = host_start_game()
     _safe_output(_connection, 'Game started!' if ok else "Can't start yet (save not synced or players not loaded in)")
-
 
 @sims4.commands.Command('mp_lobby', command_type=sims4.commands.CommandType.Live)
 def mp_lobby(_connection=None):
@@ -1789,13 +1845,11 @@ def mp_lobby(_connection=None):
     output('Save sync: {} | can start: {}'.format(_save_sync_phase, _start_granted))
     network._log("mp_lobby: {} members".format(len(_members)))
 
-
 @sims4.commands.Command('mp_leave', command_type=sims4.commands.CommandType.Live)
 def mp_leave(_connection=None):
     """离开房间"""
     leave_room()
     _safe_output(_connection, 'Left the room')
-
 
 @sims4.commands.Command('mp_code', command_type=sims4.commands.CommandType.Live)
 def mp_code(_connection=None):
@@ -1803,7 +1857,6 @@ def mp_code(_connection=None):
     output = sims4.commands.CheatOutput(_connection)
     output('Room code: {}'.format(ROOM_CODE or 'none (host only)'))
     network._log("mp_code: {}".format(ROOM_CODE))
-
 
 @sims4.commands.Command('mp_kick', command_type=sims4.commands.CommandType.Live)
 def mp_kick(player_id=None, _connection=None):
@@ -1819,7 +1872,6 @@ def mp_kick(player_id=None, _connection=None):
     ok = kick_member(pid)
     _safe_output(_connection, 'Kicked' if ok else "Couldn't kick (invalid ID, or that's the host)")
 
-
 @sims4.commands.Command('mp_promote', command_type=sims4.commands.CommandType.Live)
 def mp_promote(player_id=None, _connection=None):
     """房主转交身份: mp_promote <player_id>（标记，需重建房间生效）"""
@@ -1834,7 +1886,6 @@ def mp_promote(player_id=None, _connection=None):
     ok = promote_member(pid)
     _safe_output(_connection, 'Handed over' if ok else 'Hand-over failed')
 
-
 @sims4.commands.Command('mp_travel', command_type=sims4.commands.CommandType.Live)
 def mp_travel(_connection=None):
     """房主发起旅行同步（双端确认，防黑屏）: mp_travel"""
@@ -1843,7 +1894,6 @@ def mp_travel(_connection=None):
         return
     host_start_travel()
     _safe_output(_connection, 'Group travel started - waiting for players to confirm...')
-
 
 @sims4.commands.Command('mp_travel_ack', command_type=sims4.commands.CommandType.Live)
 def mp_travel_ack(_connection=None):
@@ -1857,20 +1907,17 @@ def mp_travel_ack(_connection=None):
     network._send_json(network._client_socket, {"type": "travel_ack", "ts": time.time()}, prio=0)
     _safe_output(_connection, 'Ready to travel - waiting for everyone...')
 
-
 @sims4.commands.Command('mp_travel_arrived', command_type=sims4.commands.CommandType.Live)
 def mp_travel_arrived(zone_id="0", _connection=None):
     """到达新场景后报告（v9.11: 全员抵达确认，防黑屏/无限加载）: mp_travel_arrived"""
     report_travel_arrived(zone_id=int(zone_id) if str(zone_id).isdigit() else zone_id)
     _safe_output(_connection, 'Arrival reported - waiting for everyone...')
 
-
 @sims4.commands.Command('mp_travel_auto', command_type=sims4.commands.CommandType.Live)
 def mp_travel_auto(_connection=None):
     """切换客机自动确认旅行（v9.22，默认开）: mp_travel_auto"""
     state = toggle_travel_auto_ack()
     _safe_output(_connection, 'Auto-confirm travel: {}'.format('on' if state else 'off'))
-
 
 @sims4.commands.Command('mp_follow_travel', command_type=sims4.commands.CommandType.Live)
 def mp_follow_travel(_connection=None):
@@ -1885,7 +1932,6 @@ def mp_follow_travel(_connection=None):
     _write_state_file()
     _safe_output(_connection, 'Follow the host when they travel: {}'.format('on' if _follow_travel else 'off'))
 
-
 def _safe_output(_connection, msg):
     try:
         if _connection is not None:
@@ -1893,7 +1939,6 @@ def _safe_output(_connection, msg):
     except Exception:
         pass
     network._log("lobby cmd: {}".format(msg))
-
 
 # ============ v9.19: 房间状态重置（第二次连接前清理残留） ============
 def reset_room_state():
@@ -1924,7 +1969,6 @@ def reset_room_state():
         pass
     _write_state_file()
     network._log("lobby: room state reset")
-
 
 @sims4.commands.Command('mp_reset', command_type=sims4.commands.CommandType.Live)
 def mp_reset(_connection=None):

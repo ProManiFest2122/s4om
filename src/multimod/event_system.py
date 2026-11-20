@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v9.19 - 事件系统（参考 S4MP EventHook + NetworkClient 生命周期）
 
 S4MP 反编译确认 (2026-08-06):
@@ -9,8 +10,8 @@ S4MP 反编译确认 (2026-08-06):
 
 用途: 替代 alarm_add_real_time → 解决主菜单阶段 time_service=None 的 alarm error
 """
-import time as _time
 
+import time as _time
 
 class EventHook:
     """S4MP 同款事件钩子 —— 解耦注册/触发
@@ -46,15 +47,20 @@ class EventHook:
 
 
 # ============ 全局连接生命周期事件 ============
+
 on_host_started = EventHook()       # 主机启动（含 player_id）
+
 on_client_connected = EventHook()   # 客户端连接成功（含 player_id）
+
 on_disconnected = EventHook()       # 断开连接（含 player_id）
 
 # ============ tick 驱动循环（替代 alarm） ============
-_tick_handlers = []                 # [(interval_sec, last_call_ts, callback), ...]
-_tick_registered = False
-_tick_handle = None
 
+_tick_handlers = []                 # [(interval_sec, last_call_ts, callback), ...]
+
+_tick_registered = False
+
+_tick_handle = None
 
 def _on_game_tick():
     """游戏每 tick 调用（注册到 core_services on_tick 或 alarm）"""
@@ -67,7 +73,6 @@ def _on_game_tick():
                 callback()
             except Exception:
                 pass  # 静默忽略单个回调错误
-
 
 def register_tick(interval_sec, callback):
     """注册周期性回调（替代 add_alarm_real_time）
@@ -86,12 +91,10 @@ def register_tick(interval_sec, callback):
         network._log("tick registered: interval={}s total={}".format(
             interval_sec, len(_tick_handlers)))
 
-
 def unregister_tick(callback):
     """注销周期性回调"""
     global _tick_handlers
     _tick_handlers = [(i, l, c) for (i, l, c) in _tick_handlers if c is not callback]
-
 
 def ensure_tick_loop():
     """确保 tick 循环已启动（用 alarm 作为后备——on_tick API 需要通过 EA Override 注入）"""

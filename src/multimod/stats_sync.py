@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v8.4 - 需求/技能同步
 
 研究: sim_info.get_all_commodities() + set_value()（modthesims 确认）
@@ -7,9 +8,8 @@
 命令:
   mp_statssync  开始/停止需求技能同步
 """
-import time
 
-import sims4.commands
+import time, sims4.commands
 
 try:
     from multimod import network
@@ -18,6 +18,7 @@ except Exception:
 
 SYNC_INTERVAL = 8.0  # 需求变化较慢，8s 检查一次
 # 关键需求（饥饿/精力/娱乐/卫生/社交/如厕）
+
 KEY_COMMODITIES = {
     "hunger": 0x0002F7CD,  # hunger
     "energy": 0x0002F7CE,  # energy
@@ -26,9 +27,10 @@ KEY_COMMODITIES = {
     "hygiene": 0x0002F7D1, # hygiene
     "bladder": 0x0002F7D2, # bladder
 }
-_last_values = {}
-_running = False
 
+_last_values = {}
+
+_running = False
 
 def _get_my_sim_info():
     """获取本机控制的 sim_info"""
@@ -48,7 +50,6 @@ def _get_my_sim_info():
         return None
     except Exception:
         return None
-
 
 def _collect_stats(sim_info):
     """收集关键需求值 + 技能值"""
@@ -84,7 +85,6 @@ def _collect_stats(sim_info):
         pass
     return stats
 
-
 def _broadcast_stats():
     """广播需求/技能（变化时）"""
     global _last_values
@@ -113,7 +113,6 @@ def _broadcast_stats():
             network._send_json(network._client_socket, payload)
     except Exception:
         pass
-
 
 def process_message(data):
     """处理需求同步消息（接收端应用）"""
@@ -152,7 +151,6 @@ def process_message(data):
         if network:
             network._log("stats sync error: {}".format(e))
 
-
 def _stats_loop():
     """需求检查循环"""
     global _running
@@ -162,7 +160,6 @@ def _stats_loop():
         except Exception:
             pass
         time.sleep(SYNC_INTERVAL)
-
 
 @sims4.commands.Command('mp_statssync', command_type=sims4.commands.CommandType.Live)
 def mp_statssync(_connection=None):

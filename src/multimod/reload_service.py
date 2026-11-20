@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v9.19 — 热重载模块（参考 S4MP reload_service.py）
 
 功能：
@@ -10,10 +11,15 @@
 
 v9.19 修复: 顶层 sims4.* 改为 try/except 惰性导入（测试环境无 sims4 可导入不崩）
 """
+
 import os
+
+from multimod import userdir as _userdir
+
 import time
 
 # 游戏内 API——测试环境可用 mock 或跳过
+
 try:
     import sims4.commands
     import sims4.reload as _r
@@ -22,17 +28,14 @@ except (ImportError, ModuleNotFoundError):
     _SIMS4_OK = False
     sims4 = None  # type: ignore
 
-
 def _log(msg):
     try:
         from multimod import network
         network._log(msg)
     except Exception:
-        log_path = os.path.join(os.path.expanduser("~"), "Documents",
-                                "Electronic Arts", "The Sims 4", "Mods", "mp_debug.log")
+        log_path = _userdir.sims_path("Mods", "mp_debug.log")
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("[{}] {}\n".format(time.strftime("%H:%M:%S"), msg))
-
 
 def _reload_directory(path, output):
     """递归重载目录下所有 .py 文件（参考 S4MP reload_directory）"""
@@ -53,45 +56,44 @@ def _reload_directory(path, output):
 
 if _SIMS4_OK:
 
-    @sims4.commands.Command("mp_reload", command_type=sims4.commands.CommandType.Live)
+    @sims4.commands.Command("mp_reload", command_type=(sims4.commands.CommandType.Live))
     def mp_reload(module=None, _connection=None):
         """热重载指定模块（如 mp_reload clock_sync）"""
         output = sims4.commands.CheatOutput(_connection)
         if not module:
-            output('Usage: mp_reload <module>  (e.g. mp_reload clock_sync)')
-            output('      mp_reload_all  reload all modules')
+            output("Usage: mp_reload <module>  (e.g. mp_reload clock_sync)")
+            output("      mp_reload_all  reload all modules")
             return
         try:
-            mod_dir = os.path.join(os.path.expanduser("~"), "Documents",
-                                   "Electronic Arts", "The Sims 4", "Mods")
+            mod_dir = _userdir.sims_path("Mods")
             parts = str(module).replace(".", os.sep).replace("/", os.sep).split(os.sep)
             if parts[0] == "multimod":
                 parts = parts[1:]
             fname = parts[-1]
             if not fname.endswith(".py"):
                 fname += ".py"
-            path = os.path.join(mod_dir, "multimod", *parts[:-1], fname) if len(parts) > 1 else \
-                   os.path.join(mod_dir, "multimod", fname)
+            path = (os.path.join)(mod_dir, "multimod", *parts[:-1], *(fname,)) if len(parts) > 1 else os.path.join(mod_dir, "multimod", fname)
             if not os.path.exists(path):
-                output('File not found: {}'.format(path))
+                output("File not found: {}".format(path))
                 return
-            output('Reloading: {}'.format(path))
+            output("Reloading: {}".format(path))
             result = _r.reload_file(path)
             if result is not None:
-                output('✅ Reloaded: {}'.format(fname))
+                output("✅ Reloaded: {}".format(fname))
                 _log("hot reload OK: {}".format(fname))
             else:
-                output('❌ Reload failed')
+                output("❌ Reload failed")
                 _log("hot reload FAIL: {}".format(fname))
         except Exception as e:
-            output('Reload error: {}'.format(e))
+            output("Reload error: {}".format(e))
             _log("hot reload error: {}".format(e))
 
-    @sims4.commands.Command("mp_reload_all", command_type=sims4.commands.CommandType.Live)
+
+    @sims4.commands.Command("mp_reload_all", command_type=(sims4.commands.CommandType.Live))
     def mp_reload_all(_connection=None):
         """断开网络 + 重载全部模块（参考 S4MP /mp.reload）"""
         output = sims4.commands.CheatOutput(_connection)
-        output('Disconnecting...')
+        output("Disconnecting...")
         try:
             from multimod import network
             network._log("hot reload: disconnecting...")
@@ -102,28 +104,71 @@ if _SIMS4_OK:
                         sock.close()
                     except Exception:
                         pass
+
                 network._clients.clear()
                 if network._server_socket:
                     try:
                         network._server_socket.close()
                     except Exception:
                         pass
+
                     network._server_socket = None
             elif network._client_socket:
                 try:
                     network._client_socket.close()
                 except Exception:
                     pass
+
                 network._client_socket = None
             network._network_thread = None
         except Exception as e:
             output("Couldn't disconnect: {}".format(e))
             _log("hot reload disconnect error: {}".format(e))
 
-        output('Reloading all modules...')
-        mod_dir = os.path.join(os.path.expanduser("~"), "Documents",
-                               "Electronic Arts", "The Sims 4", "Mods", "multimod")
+        output("Reloading all modules...")
+        mod_dir = _userdir.sims_path("Mods", "multimod")
         if os.path.isdir(mod_dir):
             _reload_directory(mod_dir, output)
-        output('✅ Reload complete')
+        output("✅ Reload complete")
         _log("hot reload all: done")
+
+def hot_source(name, src_root):
+    """Pure (tested). Path of multimod/<name>.py under src_root, or None for anything that isn't
+    a plain module name (no paths, no dots)."""
+    import re
+    if not re.match("^[a-z][a-z0-9_]*$", str(name or "")):
+        return
+    return os.path.join(src_root, "multimod", name + ".py")
+
+def hot_load(name, src_root):
+    """Recompile multimod.<name> from source and run it in the live module's namespace.
+    Returns (ok, message). Module-level state of that module restarts (fine for dev)."""
+    import importlib, sys
+    path = hot_source(name, src_root)
+    if path is None or not os.path.exists(path):
+        return (False, "no such module: {}".format(name))
+    mod = sys.modules.get("multimod." + name) or importlib.import_module("multimod." + name)
+    with open(path, "rb") as f:
+        code = compile(f.read(), path, "exec")
+    exec(code, mod.__dict__)
+    return (
+     True, "reloaded multimod.{} from source".format(name))
+
+if _SIMS4_OK:
+
+    @sims4.commands.Command("mp_hot", command_type=(sims4.commands.CommandType.Live))
+    def mp_hot(module=None, _connection=None):
+        """Dev only: mp_hot lot_live  - run the source-tree version of a module in the live game."""
+        output = sims4.commands.CheatOutput(_connection)
+        try:
+            from multimod import network
+            cfg = network._load_launcher_config() or {}
+            if cfg.get("dev_console") is not True:
+                output("mp_hot needs dev_console")
+                return
+            (ok, msg) = hot_load(module, cfg.get("dev_src") or "C:\\simlink\\mod\\src")
+            network._log("hot: {}".format(msg))
+            output(msg)
+        except Exception as e:
+            output("hot reload error: {}".format(e))
+            _log("hot reload error: {}".format(e))

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v7.1 - Mood/心情同步
 
 功能（务实版交互同步，2026-08-04 研究落地）:
@@ -15,17 +16,17 @@ API 确认（反编译 2026-08-04）:
 完全复刻复杂度极高；本模块为"心情状态同步"务实版，配合位置同步提升沉浸感。
 """
 
-import time
-
-import sims4.commands
+import time, sims4.commands
 
 from multimod import network
 
 # ============ 配置 ============
-MOOD_SYNC_INTERVAL = 2.0   # mood 广播间隔（秒，mood 变化慢，不用太快）
-_mood_sync_running = False
-_last_broadcast_mood = None
 
+MOOD_SYNC_INTERVAL = 2.0   # mood 广播间隔（秒，mood 变化慢，不用太快）
+
+_mood_sync_running = False
+
+_last_broadcast_mood = None
 
 def _get_my_sim():
     """获取自己控制的 sim"""
@@ -40,7 +41,6 @@ def _get_my_sim():
         return client.active_sim
     except Exception:
         return None
-
 
 def _get_my_mood():
     """获取自己的 mood 状态: (mood_str, intensity) 或 None"""
@@ -59,7 +59,6 @@ def _get_my_mood():
         network._log("get mood error: {}".format(e))
         return None
 
-
 def _get_sim_by_id(sim_id):
     """按 sim_id 查找 sim 实例（复用 sync 逻辑）"""
     try:
@@ -70,7 +69,6 @@ def _get_sim_by_id(sim_id):
         return sim_info.get_sim_instance()
     except Exception:
         return None
-
 
 def _apply_mood(sim_id, mood_name, intensity):
     """给对端 sim 设置 mood（尝试 add_buff）"""
@@ -94,7 +92,6 @@ def _apply_mood(sim_id, mood_name, intensity):
         network._log("apply mood error: {}".format(e))
         return False
 
-
 def _find_buff_by_name(mood_name):
     """按 mood 名找 buff 类型（简化：跳过 - 只记录日志，实际用 mood 触发）
 
@@ -104,28 +101,28 @@ def _find_buff_by_name(mood_name):
     """
     return None
 
-
 def _mood_loop():
     """mood 广播循环"""
-    global _mood_sync_running, _last_broadcast_mood
+    global _last_broadcast_mood
+    global _mood_sync_running
     network._log("mood sync loop started")
     while _mood_sync_running:
         try:
             mood = _get_my_mood()
-            if mood is not None and network._client_socket is not None:
+            if mood is not None and (network._is_host or network._client_socket is not None):
                 mood_key = "{}:{}".format(mood[0], round(mood[1] or 0, 1))
                 if mood_key != _last_broadcast_mood:
                     _last_broadcast_mood = mood_key
-                    payload = {"type": "mood", "sim_id": _get_my_sim_id(),
-                               "mood": mood[0], "intensity": mood[1]}
+                    payload = {'type':"mood",  'sim_id':_get_my_sim_id(),  'mood':mood[0], 
+                     'intensity':mood[1]}
                     if network._is_host:
                         network._broadcast(payload)
                     else:
                         network._send_json(network._client_socket, payload)
         except Exception as e:
             network._log("mood loop error: {}".format(e))
-        time.sleep(MOOD_SYNC_INTERVAL)
 
+        time.sleep(MOOD_SYNC_INTERVAL)
 
 def _get_my_sim_id():
     try:
@@ -136,45 +133,37 @@ def _get_my_sim_id():
         pass
     return 0
 
-
 def process_message(data):
     """处理 mood 类型消息（network._process_incoming 分发）"""
     if data.get("type") == "mood":
         sim_id = data.get("sim_id")
         mood = data.get("mood", "")
         intensity = data.get("intensity", 0)
-        # v8.8: mood 变化时游戏内通知（研究: UiDialogNotification——沉浸感增强）
         _last_notify_mood = _notified_moods.get(sim_id)
-        # 只对"明显情绪"通知（mood 名含情绪关键词），避免刷屏
-        _MOOD_LABELS = {"happy": '😊 Happy', "confident": '💪 Confident', "flirty": '💕 Flirty',
-                        "energized": '⚡ Energized', "focused": '🎯 Focused', "inspired": '✨ Inspired',
-                        "sad": '😢 Sad', "angry": '😠 Angry', "tense": '😣 Tense',
-                        "uncomfortable": '😖 Uncomfortable', "bored": '🥱 Bored', "embarrassed": '😳 Embarrassed',
-                        "dazed": '😵 Dazed', "grossed_out": '🤢 Nauseous', "playful": '😜 Playful',
-                        "very_energized": '⚡ Very Energized'}
+        _MOOD_LABELS = {
+          'happy': "😊 Happy", 'confident': "💪 Confident", 'flirty': "💕 Flirty",
+          'energized': "⚡ Energized", 'focused': "🎯 Focused", 'inspired': "✨ Inspired",
+          'sad': "😢 Sad", 'angry': "😠 Angry", 'tense': "😣 Tense",
+          'uncomfortable': "😖 Uncomfortable", 'bored': "\U0001f971 Bored", 'embarrassed': "😳 Embarrassed",
+          'dazed': "😵 Dazed", 'grossed_out': "🤢 Nauseous", 'playful': "😜 Playful",
+          'very_energized': "⚡ Very Energized"}
         label = None
         low = str(mood).lower()
-        for k, v in _MOOD_LABELS.items():
+        for (k, v) in _MOOD_LABELS.items():
             if k in low:
                 label = v
                 break
-        if label and _last_notify_mood != label:
-            _notified_moods[sim_id] = label
-            try:
-                network._notify('remote Sim {}'.format(label))
-            except Exception:
-                pass
-        # 记录到状态（mood 状态文件供启动器/调试显示）
+
+        if label:
+            if _last_notify_mood != label:
+                _notified_moods[sim_id] = label
         try:
             network._log("remote mood: sim={} mood={} intensity={}".format(sim_id, mood, intensity))
-            # 尝试应用（尽力而为，失败不阻塞）
             _apply_mood(sim_id, mood, intensity)
         except Exception as e:
             network._log("mood process error: {}".format(e))
 
-
 _notified_moods = {}
-
 
 @sims4.commands.Command('mp_mood', command_type=sims4.commands.CommandType.Live)
 def mp_mood(action="status", _connection=None):

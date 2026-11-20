@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """Sims4Multiplayer v9.19 — 本地操作过滤器（参考 S4MP client_config.py LOCAL_ONLY_OPS）
 
 概念（S4MP 反编译确认）:
@@ -57,8 +58,8 @@ LOCAL_ONLY_EVENTS = [
 ]
 
 # ============ 本地事件快速查询表 ============
-_LOCAL_SET = {event for event in LOCAL_ONLY_EVENTS}
 
+_LOCAL_SET = {event for event in LOCAL_ONLY_EVENTS}
 
 def is_local_only(module, event_type=None):
     """检查是否本地事件（不需要同步）
@@ -75,7 +76,6 @@ def is_local_only(module, event_type=None):
     if event_type and (module, event_type) in _LOCAL_SET:
         return True
     return False
-
 
 def filter_local_only(events, module):
     """过滤事件列表，移除纯本地事件
