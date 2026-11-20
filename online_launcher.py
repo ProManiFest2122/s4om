@@ -741,7 +741,7 @@ def main():
             icon, label = widgets[row]
             icon.configure(text=ICON[level], foreground=COLOR[level])
             label.configure(text=text, foreground="#1f2328" if level != "idle" else COLOR["idle"])
-        state["seen"] = journal(state["log"], state["seen"], rows)
+        state["seen"] = journal(state["log"], state["seen"], rows, keep=40)   # the box scrolls to the newest
         log_box.configure(state="normal")
         log_box.delete("1.0", "end")
         log_box.insert("end", "\n".join(state["log"]))
