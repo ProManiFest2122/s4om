@@ -199,6 +199,14 @@ def launcher_tests():
     check("Join: empty name falls back to something", bool(j["name"]))
     off = L.offline_config(h)
     check("Play alone: mode and code removed, name kept", "mode" not in off and "room_code" not in off and off["name"] == "Ania", off)
+    # 2026-11-20: a second click on Host made a new code while the running game kept hosting the
+    # old room, so the host read out a code that was never open ("room isn't open" for the friend)
+    again = L.host_config(h, "Ania", "play.example.org")
+    check("Host clicked again: same room code, not a new one", again["room_code"] == h["room_code"], (h["room_code"], again["room_code"]))
+    check("Host after Play alone: a fresh code", L.host_config(off, "Ania", "play.example.org")["room_code"] != h["room_code"])
+    check("Host after having joined someone: own new code, not theirs", L.host_config(j, "Ania", here)["room_code"] != "ABCDEF")
+    check("launcher says whether the host's room is really open",
+          "open - your game is hosting" in L.host_status("ABCDEF", True) and "isn't open yet" in L.host_status("ABCDEF", False))
     check("room codes: spaces/case tidied, junk refused",
           L.clean_code(" ab cd ef ") == "ABCDEF" and L.clean_code("ab") is None and L.clean_code("../x!") is None)
     check("server address: host, host:port, junk",

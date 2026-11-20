@@ -138,8 +138,23 @@ def _session(cfg, mode, code, name, relay_text):
     return cfg
 
 
+def hosting_code(cfg):
+    """The room code this player is already set to host, or None."""
+    return clean_code(cfg.get("room_code")) if cfg.get("mode") == "host" else None
+
+
 def host_config(cfg, name, relay_text, code=None):
-    return _session(cfg, "host", code or new_code(), name, relay_text)
+    # Keep the code this player already hosts with. A game that is running keeps its room: a
+    # fresh code on every click showed the host a code their game was not using, and friends
+    # who typed it were told the room isn't open.
+    return _session(cfg, "host", code or hosting_code(cfg) or new_code(), name, relay_text)
+
+
+def host_status(code, is_open):
+    if is_open:
+        return "Room {} is open - your game is hosting it right now. Give this code to your friends.".format(code)
+    return ("Room {} is yours, but it isn't open yet. It opens about 30 seconds after The Sims 4 starts.\n"
+            "Already in the game? Press Ctrl+Shift+C and type:  mp_apply").format(code)
 
 
 def join_config(cfg, name, relay_text, code):
@@ -212,15 +227,17 @@ def main():
         if relay is None:
             return
 
-        def done(ok):
-            if ok is not True:
+        new = host_config(load_config(), name_var.get(), relay_var.get().strip())
+        code = new["room_code"]
+
+        def done(is_open):
+            if is_open is None or isinstance(is_open, Exception):
                 say("Can't reach the server {} - check your internet and the address.".format(relay_var.get().strip()))
                 return
-            new = host_config(load_config(), name_var.get(), relay_var.get().strip())
             save_config(new)
-            shown_code.set(new["room_code"])
-            say("Hosting room {}. Give this code to your friends.\n{}".format(new["room_code"], NEXT_STEP))
-        in_background(lambda: relay_reachable(relay), done)
+            shown_code.set(code)
+            say(host_status(code, is_open))
+        in_background(lambda: find_room(relay, code), done)
 
     def on_join():
         relay = relay_or_complain()
@@ -278,6 +295,12 @@ def main():
     if not mod_installed():
         say("{} isn't in your Mods folder yet:\n{}\nPut it there (and turn on script mods in the game's options).".format(
             MOD_FILE, os.path.join(sims_dir(), "Mods")))
+    elif hosting_code(cfg) and clean_relay(relay_var.get()):
+        # already set to host: say whether that room is really open, instead of leaving the host to guess
+        start_code, start_relay = hosting_code(cfg), clean_relay(relay_var.get())
+        in_background(lambda: find_room(start_relay, start_code),
+                      lambda is_open: say(host_status(start_code, is_open) if isinstance(is_open, bool) else
+                                          "Room {} is yours. Can't reach the server right now to see if it is open.".format(start_code)))
     root.mainloop()
 
 
