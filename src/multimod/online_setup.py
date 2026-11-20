@@ -1,20 +1,15 @@
-# decompyle3 version 3.9.3
-# Python bytecode version base 3.7.0 (3394)
-# Decompiled from: Python 3.7.9 (tags/v3.7.9:13c94747c7, Aug 17 2020, 18:58:18) [MSC v.1900 64 bit (AMD64)]
-# Embedded file name: C:\simlink\mod\src\multimod\online_setup.py
-# Compiled at: 2026-10-23 23:24:13
-# Size of source mod 2**32: 4437 bytes
+"""S4OM online play from the cheat console - no launcher, no account, no token.
 
-"""S4OM online play without the launcher - for Mac players (the launcher is Windows-only)
-or anyone who'd rather use the cheat console.
+  mp_host_online            host online; shows the room code to give your friends
+  mp_join_online <CODE>     join a friend's room
+  mp_relay [address]        show, or change, the server that connects you (host[:port])
 
-  mp_online <token> [us|eu]   save your S4OM token (and server) - once
-  mp_host_online [us|eu]      host online; prints the room code to give your friends
-  mp_join_online <CODE>       join a friend's room (finds their server by itself)
+Both players connect out to a relay (relay/relay.py) and meet by room code, so nobody has to
+forward ports. The relay comes with the build (relay_default.DEFAULT_RELAY); mp_relay points
+this player at another one.
 
-Writes the same mp_launcher_config.json the launcher writes, so after loading a save the
-mod reconnects on its own, exactly like a launcher player. Windows and Mac players can be
-in the same room - the S4OM servers don't care what you play on.
+Writes the same mp_launcher_config.json the launcher writes, so after loading a save the mod
+reconnects on its own, exactly like a launcher player. Works the same on Windows and Mac.
 """
 
 import json, os, random, socket
@@ -26,9 +21,9 @@ except Exception:
 
 from multimod import network
 
-RELAYS = {"us": "relay.s4om.gg:7656", "eu": "relay-eu.s4om.gg:7656"}
-
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+NO_RELAY = "No online server is set. Set one with: mp_relay <address>"
 
 
 def _cfg():
@@ -44,71 +39,83 @@ def _save(cfg):
     os.replace(tmp, path)
 
 
-def set_token(token, region="us"):
-    token = str(token or "").strip()
-    region = str(region or "us").lower()
-    if len(token) < 8:
-        return (False, "Usage: mp_online <your S4OM token> [us|eu]  - get it at s4om.gg/token")
-    if region not in RELAYS:
-        return (False, "Server must be us or eu")
+def _default_name():
+    return os.environ.get("USER") or os.environ.get("USERNAME") or "Player"
+
+
+def relay_address():
+    """'host:port' of the relay in use, or '' when none is set."""
+    rc = network._relay_cfg()
+    return "{}:{}".format(rc[0], rc[1]) if rc else ""
+
+
+def set_relay(address):
+    """Point this player at a relay. '' or 'default' goes back to the one the build came with."""
+    address = str(address or "").strip()
     cfg = _cfg()
-    cfg.update(relay_token=token, region=region, relay=(RELAYS[region]), auto_sync=True)
-    cfg.setdefault("name", os.environ.get("USER") or os.environ.get("USERNAME") or "Player")
+    if address.lower() in ("", "default"):
+        cfg.pop("relay", None)
+        _save(cfg)
+        now = relay_address()
+        return (True, "Using the built-in server: {}".format(now) if now else NO_RELAY)
+    host, _, port = address.partition(":")
+    if not host or " " in address or (port and not port.isdigit()):
+        return (False, "Usage: mp_relay <address>   e.g. mp_relay play.example.org  or  mp_relay 203.0.113.7:7656")
+    cfg["relay"] = address
     _save(cfg)
-    return (
-        True,
-        "Token saved ({} server). Now: mp_host_online  or  mp_join_online <CODE>".format(region.upper()),
-    )
+    return (True, "Online server set to {}".format(relay_address()))
 
 
-def find_region(code, timeout=6):
-    """Ask each S4OM server whether room `code` is open there (relay FIND command)."""
-    for region, addr in RELAYS.items():
-        host, port = addr.split(":")
+def find_room(code, timeout=6):
+    """Ask the relay whether room `code` is open. True / False, or None when the relay can't be reached."""
+    rc = network._relay_cfg()
+    if rc is None:
+        return
+    try:
+        s = socket.create_connection((rc[0], rc[1]), timeout=timeout)
         try:
-            s = socket.create_connection((host, int(port)), timeout=timeout)
             s.sendall("S4OM FIND {}\n".format(code).encode("ascii"))
             reply = s.recv(64).decode("ascii", "replace").strip()
+        finally:
             s.close()
-            if reply.startswith("OK"):
-                return region
-        except OSError:
-            continue
-
-    return
+    except OSError:
+        return
+    return reply.startswith("OK")
 
 
-def host_online(region=None):
+def new_code():
+    return "".join((random.choice(CODE_ALPHABET) for _ in range(6)))
+
+
+def host_online():
+    if not relay_address():
+        return (False, NO_RELAY)
+    code = new_code()
     cfg = _cfg()
-    if not cfg.get("relay_token"):
-        return (False, "First save your token: mp_online <token> [us|eu]")
-    region = str(region or cfg.get("region") or "us").lower()
-    if region not in RELAYS:
-        return (False, "Server must be us or eu")
-    code = "".join((random.choice(CODE_ALPHABET) for _ in range(6)))
-    cfg.update(mode="host", room_code=code, region=region, relay=(RELAYS[region]))
+    cfg.update(mode="host", room_code=code, auto_sync=True)
+    cfg.setdefault("name", _default_name())
     cfg.pop("host", None)
     _save(cfg)
     (ok, desc) = network._apply_launcher_config()
     if not ok:
         return (False, desc)
-    return (
-        True,
-        "Hosting online on the {} server. Room code: {}  (friends type: mp_join_online {})".format(
-            region.upper(), code, code
-        ),
-    )
+    return (True, "Hosting online. Room code: {}  (friends type: mp_join_online {})".format(code, code))
 
 
 def join_online(code):
     code = str(code or "").strip().upper()
-    cfg = _cfg()
-    if not cfg.get("relay_token"):
-        return (False, "First save your token: mp_online <token> [us|eu]")
     if len(code) < 4:
         return (False, "Usage: mp_join_online <ROOM CODE>")
-    region = find_region(code) or cfg.get("region") or "us"
-    cfg.update(mode="join", room_code=code, region=region, relay=(RELAYS[region]))
+    if not relay_address():
+        return (False, NO_RELAY)
+    found = find_room(code)
+    if found is None:
+        return (False, "S4OM: can't reach the online server ({}) - check your internet".format(relay_address()))
+    if not found:
+        return (False, "S4OM: room {} isn't open - check the code, and make sure the host is in the game".format(code))
+    cfg = _cfg()
+    cfg.update(mode="join", room_code=code, auto_sync=True)
+    cfg.setdefault("name", _default_name())
     cfg.pop("host", None)
     _save(cfg)
     ok, desc = network._apply_launcher_config()
@@ -117,14 +124,18 @@ def join_online(code):
 
 if sims4 is not None:
 
-    @sims4.commands.Command("mp_online", command_type=(sims4.commands.CommandType.Live))
-    def mp_online(token=None, region="us", _connection=None):
-        sims4.commands.CheatOutput(_connection)(set_token(token, region)[1])
-
     @sims4.commands.Command("mp_host_online", command_type=(sims4.commands.CommandType.Live))
-    def mp_host_online(region=None, _connection=None):
-        sims4.commands.CheatOutput(_connection)(host_online(region)[1])
+    def mp_host_online(_connection=None):
+        sims4.commands.CheatOutput(_connection)(host_online()[1])
 
     @sims4.commands.Command("mp_join_online", command_type=(sims4.commands.CommandType.Live))
     def mp_join_online(code=None, _connection=None):
         sims4.commands.CheatOutput(_connection)(join_online(code)[1])
+
+    @sims4.commands.Command("mp_relay", command_type=(sims4.commands.CommandType.Live))
+    def mp_relay(address=None, _connection=None):
+        out = sims4.commands.CheatOutput(_connection)
+        if address is None:
+            out("Online server: {}".format(relay_address() or "none - set one with mp_relay <address>"))
+        else:
+            out(set_relay(address)[1])

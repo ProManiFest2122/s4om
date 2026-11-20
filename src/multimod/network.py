@@ -196,6 +196,10 @@ def _member_name(player_id):
 # Host and joiners both connect OUT to the relay (relay/relay.py), which pipes
 # raw bytes. Each joiner arrives at the host as a separate DATA link that is fed
 # to _handle_client exactly like a LAN accept, so the game protocol is unchanged.
+# The relay is an open one (no tokens): relay_default.DEFAULT_RELAY unless the
+# player's config names another ("relay": "host:port", set with mp_relay).
+
+from multimod.relay_default import DEFAULT_RELAY
 
 RELAY_DEFAULT_PORT = 7656
 
@@ -204,9 +208,10 @@ _relay_join = None   # (relay_host, relay_port, token, room_code) while joining 
 _relay_stop = False
 
 def _relay_cfg():
-    """(host, port, token) from launcher config "relay"/"relay_token", or None."""
+    """(host, port, token) for the relay in use, or None when there is none. The config's
+    "relay" wins, else DEFAULT_RELAY. The token slot of the protocol is always sent as "-"."""
     cfg = _load_launcher_config() or {}
-    relay = str(cfg.get("relay", "") or "").strip()
+    relay = str(cfg.get("relay", "") or DEFAULT_RELAY or "").strip()
     if not relay:
         return None
     host, _, port = relay.partition(":")
@@ -214,7 +219,7 @@ def _relay_cfg():
         port = int(port) if port else RELAY_DEFAULT_PORT
     except Exception:
         port = RELAY_DEFAULT_PORT
-    return host, port, str(cfg.get("relay_token", "") or "-")
+    return host, port, "-"   # never pass on a token left in an old config
 
 def _relay_readline(sock, limit=256):
     """Read one handshake line byte-by-byte so no game bytes are consumed."""
@@ -227,13 +232,14 @@ def _relay_readline(sock, limit=256):
     return buf.decode("ascii", "replace").strip()
 
 RELAY_ERRORS = {
-    'ERR AUTH': "S4OM: your token wasn't accepted - check it in the S4OM launcher (or get one at s4om.gg)",
-    'ERR TOKEN_IN_USE': "S4OM: this token is already being used by someone else. Each player needs their own token - Duo and Household Party members can hand out friend tokens.",
+    'ERR AUTH': "S4OM: this server asks for a token - it isn't an open relay. Set yours with mp_relay <address>",
     'ERR NOT_ALLOWED': "S4OM: you can't join this game - it has already started, or the host didn't let you in",
     'ERR NO_ROOM': "S4OM: that room isn't open - check the code, and make sure the host is in the game",
     'ERR ROOM_FULL': "S4OM: that room is full (12 players)",
     'ERR ROOM_TAKEN': "S4OM: that room code is already in use - pick a new code in the launcher",
     'ERR HOST_TIMEOUT': "S4OM: the host didn't answer - they may be loading; trying again",
+    'ERR SLOW_DOWN': "S4OM: too many tries in a short time - wait a minute and try again",
+    'ERR SERVER_FULL': "S4OM: the server has no room for another game right now",
 }
 
 _relay_error_seen = {}
@@ -292,16 +298,12 @@ def _relay_host_thread(host, port, token, code):
             except Exception:
                 pass
 
-            last_stat = 0
+            # The relay is told only what it needs to connect players: session summaries
+            # (player names, household funds) are no longer sent to it.
             while not _relay_stop:
                 line = _relay_readline(ctl)
                 if not line:
                     raise RuntimeError("relay control link closed")
-                if time.time() - last_stat > SESSION_STAT_EVERY:
-                    last_stat = time.time()
-                    stat = _session_stat()
-                    if stat:
-                        ctl.sendall((stat + "\n").encode("utf-8"))
                 if line == "PING":
                     ctl.sendall(b'PONG\n')
                     continue
@@ -312,52 +314,12 @@ def _relay_host_thread(host, port, token, code):
         except Exception as e:
             msg = str(e)
             _log("relay host error: {}".format(msg))
-            if msg.startswith(('ERR AUTH', 'ERR ROOM_TAKEN', 'ERR TOKEN_IN_USE')):
+            if msg.startswith(('ERR AUTH', 'ERR ROOM_TAKEN', 'ERR SERVER_FULL')):
                 return
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 
 PING_TIMEOUT_RELAY = 60   # relay pings every 20s
-
-SESSION_STAT_EVERY = 300  # seconds between session summaries sent to the relay (Discord recap)
-
-def _session_funds():
-    """Household funds for the session recap, or None."""
-    try:
-        import services
-        hh = services.active_household()
-        if hh is not None and getattr(hh, "funds", None) is not None:
-            f = hh.funds
-            return int(getattr(f, "money", f))
-    except Exception:
-        pass
-    try:
-        from multimod import money_sync
-        return money_sync._get_funds()
-    except Exception:
-        return None
-
-def _session_stat():
-    """'STAT {json}' line for the relay - names and household money only. None when the host
-    turned recaps off in the launcher (config "session_recap": false)."""
-    cfg = _load_launcher_config() or {}
-    if cfg.get("session_recap", True) is False:
-        return
-    try:
-        from multimod import lobby
-        names = [str(m.get("name", ""))[:24] for m in lobby._members.values() if m.get("online", True)]
-    except Exception:
-        names = []
-
-    stat = {'host':str(cfg.get("name", ""))[:24], 
-     'players':names[:12],  'funds':_session_funds()}
-    try:
-        from multimod import party_games
-        stat["challenges"] = party_games.recap_results()
-    except Exception:
-        pass
-
-    return "STAT " + json.dumps(stat, separators=(',', ':'))
 
 def _start_relay_host():
     """Start the relay control thread if the launcher config names a relay."""
@@ -2217,13 +2179,17 @@ def mp_join(host=None, port=None, _connection=None):
 
 def _join_via_relay(code):
     """Point the client at the relay for this room code and start connecting."""
-    global _network_thread, _is_host, _relay_join
+    global _network_thread, _is_host, _relay_join, _want_session
     rc = _relay_cfg()
     if rc is None:
         return False, "no relay configured"
     code = str(code).strip().upper()
     _relay_join = (rc[0], rc[1], rc[2], code)
     _is_host = False
+    # Joining by code means the player wants to stay in this session: without this flag the
+    # reconnect loop (lobby.schedule_reconnect_with_backoff) gives up at once, so a player who
+    # joined with mp_join_code was never brought back after a dropped connection.
+    _want_session = True
     try:
         from multimod import clock_sync
         clock_sync.set_host_flag(False)

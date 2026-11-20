@@ -15,6 +15,12 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "..", "src")
+# Keep the mod's files (log, self-check, config) out of a real player's Mods folder: the peers,
+# and every test that borrows this module's stubs, use a throw-away folder (see userdir.py).
+if not os.environ.get("S4OM_USERDIR"):
+    import tempfile
+    os.environ["S4OM_USERDIR"] = os.path.join(tempfile.gettempdir(), "s4om_test_userdir")
+    os.makedirs(os.path.join(os.environ["S4OM_USERDIR"], "Mods"), exist_ok=True)
 PORT = 19777
 ROLES = ("host",) + tuple("client" if i == 1 else "client%d" % i for i in range(1, int(os.environ.get("S4OM_TEST_PLAYERS", "3"))))
 RUN_SECONDS = float(os.environ.get("S4OM_TEST_SECONDS", "8"))
@@ -47,7 +53,7 @@ def _install_game_stubs():
 RELAY_PORT = 17656
 RELAY_STATUS_PORT = 17657
 ROOM = "TESTRM"
-RELAY_PY = os.path.join(HERE, "..", "..", "relay", "relay.py")
+RELAY_PY = os.path.join(HERE, "..", "relay", "relay.py")
 
 
 def run_peer(role, mode="lan"):

@@ -57,6 +57,10 @@ def _from_registry():
 
 
 def _find():
+    # Tests (tools/) set this so they never read or write a real player's Mods folder.
+    override = os.environ.get("S4OM_USERDIR")
+    if override:
+        return override
     try:
         found = from_module_path(os.path.abspath(__file__))
         if found:
