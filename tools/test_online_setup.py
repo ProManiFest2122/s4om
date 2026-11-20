@@ -162,9 +162,11 @@ def mod_tests():
           and all(ch in online_setup.CODE_ALPHABET for ch in code), msg)
     check("nothing token-like is written to the config", "relay_token" not in c and "token" not in json.dumps(c).lower(), c)
 
-    before = dict(cfg())
+    # a joiner may start before the host: that is "waiting", not an error (the game keeps asking)
     ok, msg = online_setup.join_online("ZZZZZZ")
-    check("joining a room that isn't open is refused, config untouched", not ok and "isn't open" in msg and cfg() == before, msg)
+    c = cfg()
+    check("joining a room that isn't open yet is accepted and says it is waiting",
+          ok and "waiting for the host" in msg and c.get("mode") == "join" and c.get("room_code") == "ZZZZZZ", msg)
     check("joining needs a code", not online_setup.join_online("")[0])
     reply, ctl = hello("S4OM HOST FRIEND -", keep=True)
     ok, msg = online_setup.join_online(" friend ")
@@ -205,8 +207,7 @@ def launcher_tests():
     check("Host clicked again: same room code, not a new one", again["room_code"] == h["room_code"], (h["room_code"], again["room_code"]))
     check("Host after Play alone: a fresh code", L.host_config(off, "Ania", "play.example.org")["room_code"] != h["room_code"])
     check("Host after having joined someone: own new code, not theirs", L.host_config(j, "Ania", here)["room_code"] != "ABCDEF")
-    check("launcher says whether the host's room is really open",
-          "open - your game is hosting" in L.host_status("ABCDEF", True) and "isn't open yet" in L.host_status("ABCDEF", False))
+    check("every click is stamped, so the running game sees a new request", isinstance(h.get("at"), int) and "at" not in off)
     check("room codes: spaces/case tidied, junk refused",
           L.clean_code(" ab cd ef ") == "ABCDEF" and L.clean_code("ab") is None and L.clean_code("../x!") is None)
     check("server address: host, host:port, junk",
@@ -234,7 +235,89 @@ def launcher_tests():
     check("mod: hosts with the launcher's room code", lobby.ROOM_CODE == "PARTY7", lobby.ROOM_CODE)
     L.save_config(L.host_config({}, "Ania", "play.example.org", code="PARTY7"))
     check("mod: built-in server when the config names none", network._relay_cfg() == ("play.example.org", 7656, "-"))
-    check("launcher describes the saved session", "HOST" in L.describe(L.load_config()) and "off" in L.describe({}))
+
+
+def launcher_setup_tests():
+    print("[E] launcher: installs the mod, fixes the game's options, says what the game is doing")
+    import online_launcher as L
+
+    root = tempfile.mkdtemp(prefix="s4om_launcher_")
+    mods = os.path.join(root, "Mods")
+    os.makedirs(os.path.join(mods, "sub"))
+    src = os.path.join(root, "bundle.ts4script")
+    with open(src, "wb") as f:
+        f.write(b"new mod build")
+    target = os.path.join(mods, L.MOD_FILE)
+
+    check("no bundled mod -> says so, touches nothing", L.install_mod(src="", mods=mods, running=False)[0] == "none")
+    st, moved = L.install_mod(src=src, mods=mods, running=False)
+    check("empty Mods folder -> installed", st == "installed" and open(target, "rb").read() == b"new mod build", st)
+    check("same file there -> nothing to do", L.install_mod(src=src, mods=mods, running=False) == ("current", []))
+    with open(target, "wb") as f:
+        f.write(b"old mod build")
+    check("older mod, game running -> not replaced mid-game, asks to close it",
+          L.install_mod(src=src, mods=mods, running=True)[0] == "close" and open(target, "rb").read() == b"old mod build")
+    st, moved = L.install_mod(src=src, mods=mods, running=False)
+    check("older mod, game closed -> updated", st == "updated" and open(target, "rb").read() == b"new mod build", st)
+    os.remove(target)
+    check("no mod, game running -> installed for the next start",
+          L.install_mod(src=src, mods=mods, running=True)[0] == "restart" and os.path.exists(target))
+    for name in ("S4OM (1).ts4script", "S4OM.ts4script.zip", os.path.join("sub", "S4OM.ts4script"), "OtherMod.ts4script", "s4om_notes.txt"):
+        with open(os.path.join(mods, name), "wb") as f:
+            f.write(b"x")
+    st, moved = L.install_mod(src=src, mods=mods, running=False)
+    left = sorted(os.listdir(mods)) + sorted(os.listdir(os.path.join(mods, "sub")))
+    check("misnamed and duplicate copies are moved out of Mods, other files stay",
+          sorted(moved) == ["S4OM (1).ts4script", "S4OM.ts4script", "S4OM.ts4script.zip"]
+          and left == ["OtherMod.ts4script", "S4OM.ts4script", "s4om_notes.txt", "sub"], (moved, left))
+    check("...moved, not deleted", len(os.listdir(os.path.join(root, "S4OM-old-files"))) == 3)
+
+    ini = os.path.join(root, "Options.ini")
+    check("no Options.ini (game never started) -> nothing to fix", L.fix_options(ini, running=False) == "missing")
+    body = b"[options]\r\ncdsautomaticupdates = 1\r\nscriptmodsenabled = 0\r\nname = Za\xbf\xf3\xb3\xe6\r\nmodsdisabled = 1\r\n"
+    with open(ini, "wb") as f:
+        f.write(body)
+    check("script mods off, game running -> asks to close the game, file untouched",
+          L.fix_options(ini, running=True) == "close" and open(ini, "rb").read() == body)
+    check("script mods off, game closed -> turned on", L.fix_options(ini, running=False) == "fixed")
+    fixed = open(ini, "rb").read()
+    check("only those two lines changed (other bytes and line ends kept)",
+          fixed == body.replace(b"scriptmodsenabled = 0", b"scriptmodsenabled = 1").replace(b"modsdisabled = 1", b"modsdisabled = 0"))
+    check("the original is kept as a backup", open(ini + ".s4om-backup", "rb").read() == body)
+    check("already on -> nothing to do", L.fix_options(ini, running=False) == "ok")
+    with open(ini, "wb") as f:
+        f.write(b"[options]\ncdsautomaticupdates = 1\n")
+    check("setting missing altogether -> added", L.fix_options(ini, running=False) == "fixed"
+          and b"[options]\nscriptmodsenabled = 1\n" in open(ini, "rb").read())
+    check("messages for the player exist in both languages",
+          "Mods" in L.setup_message("installed", [], "ok", lang="en") and "Mods" in L.setup_message("installed", [], "ok", lang="pl")
+          and L.setup_message("current", [], "ok", lang="pl") == L.TEXT["pl"]["setup_ok"]
+          and set(L.TEXT["en"]) == set(L.TEXT["pl"]))
+
+    spath = os.path.join(root, "mp_status.json")
+    now = time.time()
+    check("no status file -> None", L.read_status(spath) is None)
+    with open(spath, "w", encoding="utf-8") as f:
+        json.dump({"at": now - 5, "state": "hosting", "room": "PARTY7", "players": ["Ania"], "note": ""}, f)
+    check("fresh status is read", (L.read_status(spath, now) or {}).get("state") == "hosting")
+    check("stale status (game closed) is ignored", L.read_status(spath, now + 60) is None)
+
+    host = {"mode": "host", "room_code": "PARTY7"}
+    join = {"mode": "join", "room_code": "PARTY7"}
+    d = lambda cfg, status, running, **k: L.describe(cfg, status, running, lang="en", **k)
+    check("game closed: tells the host / joiner / newcomer what to do next",
+          "Start The Sims 4" in d(host, None, False) and "PARTY7" in d(join, None, False) and "Host a game" in d({}, None, False))
+    check("game just started: 'starting', not 'the mod is missing'", "starting" in d(join, None, True, starting=True))
+    check("game running without the mod reporting in: says the mod didn't load", "didn't load" in d(join, None, True))
+    check("hosting alone / with friends", "nobody has joined" in d(host, {"state": "hosting", "room": "PARTY7", "players": ["Ania"]}, True)
+          and "Ania, Ola" in d(host, {"state": "hosting", "room": "PARTY7", "players": ["Ania", "Ola"]}, True))
+    check("joiner waiting for the host", "isn't open yet" in d(join, {"state": "waiting for the host", "room": "PARTY7", "players": []}, True))
+    check("joiner connected, with the hand-off note",
+          "Connected to room PARTY7" in d(join, {"state": "connected", "room": "PARTY7", "players": ["Ania", "Ola"], "note": "the host's game arrived"}, True)
+          and "host's game arrived" in d(join, {"state": "connected", "room": "PARTY7", "players": ["Ania"], "note": "the host's game arrived"}, True))
+    check("game in another room than the launcher asks for -> says a restart is needed",
+          "close The Sims 4" in d(join, {"state": "hosting", "room": "OLD123", "players": ["Ania"]}, True))
+    check("Polish window on request", "Hostujesz pokój PARTY7" in L.describe(host, {"state": "hosting", "room": "PARTY7", "players": ["Ania"]}, True, lang="pl"))
 
 
 def remote_main(address):
@@ -269,6 +352,7 @@ def main():
         relay_tests()
         mod_tests()
         launcher_tests()
+        launcher_setup_tests()
     finally:
         relay.kill()
     passed = sum(results)

@@ -12,7 +12,7 @@ Writes the same mp_launcher_config.json the launcher writes, so after loading a 
 reconnects on its own, exactly like a launcher player. Works the same on Windows and Mac.
 """
 
-import json, os, random, socket
+import json, os, random, socket, time
 
 try:
     import sims4.commands
@@ -92,7 +92,7 @@ def host_online():
         return (False, NO_RELAY)
     code = new_code()
     cfg = _cfg()
-    cfg.update(mode="host", room_code=code, auto_sync=True)
+    cfg.update(mode="host", room_code=code, auto_sync=True, at=int(time.time()))
     cfg.setdefault("name", _default_name())
     cfg.pop("host", None)
     _save(cfg)
@@ -111,14 +111,15 @@ def join_online(code):
     found = find_room(code)
     if found is None:
         return (False, "S4OM: can't reach the online server ({}) - check your internet".format(relay_address()))
-    if not found:
-        return (False, "S4OM: room {} isn't open - check the code, and make sure the host is in the game".format(code))
     cfg = _cfg()
-    cfg.update(mode="join", room_code=code, auto_sync=True)
+    cfg.update(mode="join", room_code=code, auto_sync=True, at=int(time.time()))
     cfg.setdefault("name", _default_name())
     cfg.pop("host", None)
     _save(cfg)
     ok, desc = network._apply_launcher_config()
+    if ok and not found:
+        # not an error any more: the game keeps asking and joins when the host opens the room
+        return (True, "Room {} isn't open yet - waiting for the host. You'll be connected as soon as they're in the game.".format(code))
     return (ok, desc if ok else "S4OM: " + desc)
 
 

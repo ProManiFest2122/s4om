@@ -32,10 +32,34 @@ In-game cheat-console commands:
 | `mp_say <text>` | Chat |
 | `mp_status` | Connection status |
 
-[online_launcher.py](online_launcher.py) is a small window that does the same without the
-console: **Host a game** shows a code, **Join a game** takes one. It writes
-`Documents\Electronic Arts\The Sims 4\Mods\mp_launcher_config.json`, which the mod reads on load
-(`mode`, `name`, `relay`, `room_code`, `host`, `port`); in a running game `mp_apply` reads it again.
+### Playing without the console
+
+[online_launcher.py](online_launcher.py) (built as `S4OM-Online.exe`) is the one file a player needs:
+
+- **Host:** click **Host a game**, give the code to friends, play. The code stays the same.
+- **Join:** type the code, click **Join**, start The Sims 4 (before or after the click, before or
+  after the host - it does not matter).
+
+Everything else happens by itself:
+
+| What | Who does it |
+|---|---|
+| The mod is put into `Mods` (or updated), misnamed copies are moved aside | launcher |
+| "Script Mods Allowed" is switched on in the game's `Options.ini` (backup kept) | launcher |
+| The game picks up Host / Join while it is running - no `mp_apply` | mod (`session_watch.py`) |
+| A joiner who is early waits for the host's room to open | mod (`network._join_when_open`) |
+| The host's game is saved and sent to a player who is not in it yet - no `mp_resync` | mod (`world_handoff.py`) |
+| A joiner at the main menu has the host's save opened for them; in a household they get one button, "Load host's game" | mod (`world_handoff.py`, `resync.py`) |
+| The window shows what the game is really doing: hosting / waiting for the host / connected, and who is in the room | mod writes `Mods/mp_status.json`, launcher shows it |
+
+Everybody plays in one save, the host's. A joiner's hello says which copy of the host's game it
+is in (`world`, the id of the last copy received, and `hh`, the household loaded); the host sends
+its game only when those do not match its own, so reconnecting from inside the host's game sends
+nothing. Opening the save automatically needs a game version the mod knows (`autoload.KNOWN`);
+on other versions the player is told to open it from Load Game.
+
+The launcher writes `Documents\Electronic Arts\The Sims 4\Mods\mp_launcher_config.json`
+(`mode`, `name`, `relay`, `room_code`, `at`).
 
 The relay address is built in: `build.py --relay host:port` writes it to
 `src/multimod/relay_default.py`. A `relay` entry in the config (or `mp_relay`) overrides it.
@@ -50,10 +74,11 @@ Requires **Python 3.7** - The Sims 4 runs 3.7 and the `.pyc` magic number must m
 "C:\Program Files\Python37\python.exe" build.py --relay play.example.org:7656   # set the online server, then build
 ```
 
-The launcher as a single .exe (any recent Python with PyInstaller):
+The launcher as a single .exe with the mod inside (any recent Python with PyInstaller; build the
+mod first, and give `--add-data` an absolute path):
 
 ```
-pyinstaller --onefile --windowed --name S4OM-Online --paths src/multimod online_launcher.py
+pyinstaller --onefile --windowed --name S4OM-Online --paths src/multimod --add-data "C:\path\to\build\S4OM.ts4script;." online_launcher.py
 ```
 
 ## Tests
@@ -63,6 +88,7 @@ set PYTHONUTF8=1
 "C:\Program Files\Python37\python.exe" tools\two_process_test.py lan     # host + 2 clients, real TCP
 "C:\Program Files\Python37\python.exe" tools\two_process_test.py relay   # same, through a local relay
 "C:\Program Files\Python37\python.exe" tools\test_online_setup.py          # relay protocol, online commands, launcher logic
+"C:\Program Files\Python37\python.exe" tools\test_world_handoff.py         # joiner starts first, host's game sent and opened by itself
 "C:\Program Files\Python37\python.exe" tools\stress_test.py                # 12 players through the relay
 ```
 

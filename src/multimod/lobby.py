@@ -916,6 +916,7 @@ def leave_room():
         _save_sync_phase = "idle"
         _start_granted = False
         network._want_session = False
+        network._room_wait = None       # also stop waiting for a room that hasn't opened
         _write_state_file()
         network._log("lobby: left room")
     except Exception as e:
@@ -1551,6 +1552,12 @@ def process_message(data, sender_pid=None):
                     network._send_json(sock, {"type": "join_rejected", "reason": 'Wrong room password'})
                     return
                 on_hello(sender_pid, name, ip)
+                try:
+                    # a player who isn't in the host's game yet gets it sent, no mp_resync needed
+                    from multimod import world_handoff
+                    world_handoff.on_player(sender_pid, name, data)
+                except Exception as e:
+                    network._log("hand-off hello error: {}".format(e))
                 note = game_version_note(_my_game_version(), data.get("game"), name)
                 if note:
                     network._log("lobby: " + note)

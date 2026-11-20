@@ -493,6 +493,14 @@ def _process_incoming():
                         dialog_router.note_owner(data.get("sim_id"), sender_pid)
                     except Exception:
                         pass
+            if mtype == "world_report":
+                if _is_host and sender_pid not in (None, 0):
+                    try:
+                        from multimod import world_handoff
+                        world_handoff.on_report(sender_pid, data)
+                    except Exception as e:
+                        _log("hand-off report err: {}".format(e))
+                continue
             if mtype == "byos_import" and sender_pid in (None, 0):
                 try:
                     from multimod import byos
@@ -930,6 +938,18 @@ _host_port = DEFAULT_PORT       # v9.23: 看门狗重启 server 线程用
 
 _want_session = False
 
+MOD_BUILD = "open-relay-2"   # shown in Mods/mp_status.json so a launcher can tell an old mod from this one
+
+_applied_session = None    # session_watch.signature of the launcher config last started here
+
+_room_wait = None          # (room code, generation) while a joiner waits for the host's room to open
+
+_room_wait_gen = 0
+
+ROOM_WAIT_POLL = 5.0       # seconds between "is the room open yet?" questions to the relay
+
+ROOM_WAIT_MAX = 2 * 3600   # give up after two hours
+
 _last_watchdog_check = 0.0      # v9.23: 看门狗节流（10s 一次）
 
 def _periodic_state_refresh():
@@ -1070,6 +1090,12 @@ def _desync_tick():
         resync.tick()
     except Exception as e:
         _log("resync tick error: {}".format(e))
+
+    try:
+        from multimod import world_handoff
+        world_handoff.tick()
+    except Exception as e:
+        _log("hand-off tick error: {}".format(e))
 
     try:
         from multimod import lot_share
@@ -1262,6 +1288,11 @@ def _check_lot_status():
             _log("lot status changed: in_lot={}".format(in_lot))
             if in_lot:
                 _flush_pending_notifs()
+                try:
+                    from multimod import world_handoff
+                    world_handoff.report()      # joiner: tell the host which household loaded
+                except Exception as e:
+                    _log("hand-off report error: {}".format(e))
                 try:
                     from multimod import lobby
                     lobby.auto_report_arrival()
@@ -2039,9 +2070,15 @@ def _client_thread(host, port=DEFAULT_PORT):
             except Exception:
                 _game = ""
 
-            _send_json(sock, {'type':"hello",  'name':player_name,  'password':room_password,  'proto_version':PROTO_VERSION, 
-             'game':_game,  'client_nonce':(_my_nonce.decode)("utf-8")},
-              prio=0)
+            _hello = {'type':"hello",  'name':player_name,  'password':room_password,  'proto_version':PROTO_VERSION, 
+             'game':_game,  'client_nonce':(_my_nonce.decode)("utf-8")}
+            try:
+                # which copy of the host's game we are in, so the host knows whether to send it
+                from multimod import world_handoff
+                _hello.update(world_handoff.hello_fields())
+            except Exception:
+                pass
+            _send_json(sock, _hello, prio=0)
             _ensure_alarm()
             _recv_loop(sock, is_client=True)
         except Exception as e:
@@ -2176,6 +2213,61 @@ def mp_join(host=None, port=None, _connection=None):
         start_client_discovery()
     except Exception as e:
         _log("discovery start error: {}".format(e))
+
+def _room_is_open(code, timeout=6):
+    """Ask the relay whether room `code` is open. True / False, None when it can't be reached."""
+    rc = _relay_cfg()
+    if rc is None:
+        return None
+    try:
+        s = socket.create_connection((rc[0], rc[1]), timeout=timeout)
+        try:
+            s.sendall("S4OM FIND {}\n".format(code).encode("ascii"))
+            reply = s.recv(64).decode("ascii", "replace").strip()
+        finally:
+            s.close()
+    except OSError:
+        return None
+    return reply.startswith("OK")
+
+def _join_when_open(code):
+    """Join room `code` now if the host has it open; otherwise keep asking the relay and join the
+    moment it opens. Before this a joiner who started first got one "room isn't open" and then a
+    reconnect loop that was never meant for a room that didn't exist yet."""
+    global _room_wait, _room_wait_gen
+    if _relay_cfg() is None:
+        return False, "no relay configured"
+    code = str(code).strip().upper()
+    _room_wait_gen += 1
+    mine = (code, _room_wait_gen)
+    if _room_is_open(code) is True:
+        _room_wait = None
+        return _join_via_relay(code)
+    _room_wait = mine
+
+    def wait():
+        global _room_wait
+        deadline = time.time() + ROOM_WAIT_MAX
+        while _room_wait == mine and time.time() < deadline:
+            time.sleep(ROOM_WAIT_POLL)
+            if _room_wait != mine:
+                return                      # joined another way, left, or a newer request took over
+            if _room_is_open(code) is True:
+                _room_wait = None
+                if _network_thread and _network_thread.is_alive():
+                    return
+                ok, desc = _join_via_relay(code)
+                _log("room {} opened -> {}".format(code, desc))
+                return
+        if _room_wait == mine:
+            _room_wait = None
+            _log("room {} never opened - stopped waiting".format(code))
+            _notify("S4OM: room {} never opened - click Join in the launcher to try again.".format(code))
+
+    threading.Thread(target=wait, daemon=True).start()
+    _log("room {} isn't open yet - waiting for the host".format(code))
+    _notify("S4OM: waiting for the host - room {} isn't open yet. You'll be connected as soon as it is.".format(code))
+    return True, "waiting for room {} to open".format(code)
 
 def _join_via_relay(code):
     """Point the client at the relay for this room code and start connecting."""
@@ -2339,10 +2431,15 @@ def _apply_launcher_config():
     """
     # fork: _is_host/_my_player_id were missing here, so launcher-started hosts never
     # actually became host (assignments below only set locals).
-    global _network_thread, _host_port, _is_host, _my_player_id, _want_session  # ⚠️ 必须声明！否则赋值被当局部变量 → referenced before assignment
+    global _network_thread, _host_port, _is_host, _my_player_id, _want_session, _applied_session  # ⚠️ 必须声明！否则赋值被当局部变量 → referenced before assignment
     cfg = _load_launcher_config()
     if not cfg:
         return False, 'No launcher settings found (mp_launcher_config.json)'
+    try:
+        from multimod import session_watch
+        _applied_session = session_watch.signature(cfg)   # this request is being handled
+    except Exception:
+        pass
     mode = cfg.get("mode")
     port = int(cfg.get("port", DEFAULT_PORT))
     if mode == "host":
@@ -2386,7 +2483,8 @@ def _apply_launcher_config():
         # fork: online join by room code through the relay
         if _network_thread and _network_thread.is_alive():
             return False, 'S4OM is already running'
-        ok, desc = _join_via_relay(cfg["room_code"])
+        # joins now, or as soon as the host opens the room - the joiner may start first
+        ok, desc = _join_when_open(cfg["room_code"])
         if not ok:
             return False, desc
         _want_session = True

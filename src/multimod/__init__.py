@@ -74,6 +74,10 @@ from multimod import activity_sync
 
 from multimod import object_state_sync
 
+from multimod import world_handoff
+
+from multimod import session_watch
+
 from multimod import look_sync
 
 from multimod import npc_sync
@@ -109,6 +113,12 @@ def _auto_apply_config():
         _log("auto-apply setup error: {}".format(e))
 
 _auto_apply_config()  # 启动器一键启动时自动连接
+
+try:
+    # follows the launcher while the game runs (no mp_apply) and writes Mods/mp_status.json
+    session_watch.start()
+except Exception as e:
+    _log("session watch error: {}".format(e))
 
 @sims4.commands.Command("mp_hello", command_type=sims4.commands.CommandType.Live)
 def mp_hello(*args, _connection=None):

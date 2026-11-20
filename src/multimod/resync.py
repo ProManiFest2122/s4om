@@ -204,8 +204,11 @@ def _send():
 
         (ok, desc) = lobby.host_send_save_file(_file, save_as=SYNC_SLOT)
         if ok:
+            from multimod import world_handoff
+
             network._broadcast(
-                {"type": "resync_ready", "reason": _reason, "name": _display, "file": SYNC_SLOT}
+                {"type": "resync_ready", "reason": _reason, "name": _display, "file": SYNC_SLOT,
+                 "world": world_handoff.new_world()}
             )
             network._notify("S4OM: your game was sent - everyone is loading it now.")
         else:
@@ -278,6 +281,14 @@ def show_load_dialog(name, reason):
 
 def on_ready(data):
     name = data.get("name") or "the host's save"
+    try:
+        from multimod import world_handoff
+
+        if world_handoff.on_world(data, _sync_slot_number()):
+            network._log("resync: ready - opening '{}' from the main menu".format(name))
+            return
+    except Exception as e:
+        network._log("resync: hand-off error: {}".format(e))
     show_load_dialog(name, data.get("reason", "re-synced"))
     network._notify(
         "S4OM: the host {}. Press Load host's game (or Esc > Main Menu, no need to save) and '{}' opens by itself. You'll rejoin the room automatically.".format(
