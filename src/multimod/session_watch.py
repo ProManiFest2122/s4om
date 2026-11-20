@@ -23,6 +23,7 @@ from multimod import network
 POLL = 3.0
 FIRST_LOOK = 40.0       # after the mod loads; the start-up timer applies the config at 30 s
 STATUS_FILE = "mp_status.json"
+ERROR_SHOWN_FOR = 90.0  # seconds a relay refusal stays in the status file
 
 _started = False
 _seen = None            # the session signature we last acted on (or told the player about)
@@ -63,6 +64,13 @@ def session_state():
             return "hosting"
         if network._client_socket is not None:
             return "connected"
+        try:
+            from multimod import lobby
+
+            if lobby._reconnect_in_progress:
+                return "reconnecting"
+        except Exception:
+            pass
         if network._room_wait is not None:
             return "waiting for the host"
         if thread_alive or network._client_connecting:
@@ -91,8 +99,12 @@ def status():
         from multimod import world_handoff
 
         out["note"] = world_handoff.status
+        out["handoff"] = world_handoff.handoff_status()
     except Exception:
         pass
+    err = network._last_relay_error
+    if err is not None and time.time() - err[1] < ERROR_SHOWN_FOR and out["state"] not in ("hosting", "connected"):
+        out["error"] = err[0]      # e.g. "ERR ROOM_FULL": why joining / hosting isn't happening
     return out
 
 

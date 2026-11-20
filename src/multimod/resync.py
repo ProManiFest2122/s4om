@@ -225,6 +225,12 @@ def _sync_slot_number():
 
 
 def on_start(data):
+    try:
+        from multimod import world_handoff
+
+        world_handoff.receiving()       # status file: "receiving the host's game"
+    except Exception:
+        pass
     network._notify("S4OM: the host {} - receiving their game...".format(data.get("reason", "is re-syncing")))
 
 

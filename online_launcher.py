@@ -51,66 +51,131 @@ GAME_EXES = ("ts4_x64.exe", "ts4.exe", "ts4_dx9_x64.exe", "ts4_x64_fpb.exe")
 # ---------------------------------------------------------------- texts
 TEXT = {
     "en": {
-        "name": "Your name", "server": "Server", "host": "Host a game", "join": "Join a game", "copy": "Copy code",
-        "code_hint": "room code", "alone": "Play alone (online off)", "checking": "Checking the server...",
+        # window
+        "name": "Your name", "server": "Server", "host": "Host a game", "join": "Join", "copy": "Copy code",
+        "code_hint": "room code", "alone": "Play alone (online off)", "log": "What happened",
         "need_server": "Type the server's address first (ask whoever runs your relay), e.g. play.example.org",
         "need_code": "Type the room code your host gave you (letters and digits).",
-        "no_server": "Can't reach the server {} - check your internet connection.",
         "copied": "Room code {} copied.",
         "off": "Online is off - the game starts as usual.",
-        "setup_ok": "Mod installed, script mods on.",
-        "setup_installed": "Mod installed into your Mods folder.",
-        "setup_updated": "Mod updated to this version.",
-        "setup_restart": "Mod installed - close The Sims 4 and start it again so it loads.",
-        "setup_close": "A newer mod is ready - close The Sims 4 so it can be replaced, then open this window again.",
-        "setup_nobundle": "This copy of the launcher has no mod inside - put S4OM.ts4script into your Mods folder yourself.",
-        "setup_options_fixed": "Script mods were switched off in the game - turned them on.",
-        "setup_options_close": "Script mods are switched off in the game. Close The Sims 4 and open this window again - it will turn them on.",
-        "setup_moved": "Moved aside {} wrong copy/copies of the mod.",
-        "st_host_idle": "Room {} is yours. Start The Sims 4 and load your household - the room opens by itself. Give this code to your friends.",
-        "st_join_idle": "You'll join room {}. Start The Sims 4 - you're connected as soon as the host is in the game, and their game opens by itself.",
-        "st_none_idle": "Click Host a game, or type a friend's code and click Join.",
-        "st_no_mod": "The Sims 4 is running, but the S4OM mod didn't load. Close the game and start it again.",
-        "st_hosting": "Hosting room {} - in the room: {}.",
-        "st_hosting_alone": "Hosting room {} - nobody has joined yet. Give this code to your friends.",
-        "st_connected": "Connected to room {} - in the room: {}.",
-        "st_waiting": "Waiting for the host: room {} isn't open yet. You'll be connected as soon as it is.",
-        "st_joining": "Joining room {}...",
-        "st_game_idle": "The Sims 4 is running. Connecting in a moment...",
-        "st_game_off": "The Sims 4 is running, online is off.",
-        "st_other_room": "The game is in room {}. To switch to room {} close The Sims 4 and start it again.",
-        "st_starting": "The Sims 4 is starting...",
+        # step names
+        "row_mod": "Mod", "row_options": "Game settings", "row_server": "Server", "row_game": "Game",
+        "row_link": "Connection", "row_world": "Host's game",
+        # mod
+        "mod_checking": "Checking the mod...", "mod_installing": "Installing the mod...",
+        "mod_replacing": "Replacing the mod with the new version...",
+        "mod_installed": "Mod installed", "mod_updated": "Mod replaced with the new version", "mod_current": "Mod is up to date",
+        "mod_restart": "Mod installed - close The Sims 4 and start it again so it loads",
+        "mod_close": "A newer mod is waiting - close The Sims 4 so it can be replaced",
+        "mod_none": "This launcher has no mod inside - put S4OM.ts4script into Mods yourself",
+        "mod_moved": " (wrong copies moved aside: {})",
+        # game settings
+        "opt_checking": "Checking the game's settings...", "opt_ok": "Script mods are on",
+        "opt_fixed": "Script mods were off - turned them on",
+        "opt_close": "Script mods are off - close The Sims 4, this window will turn them on",
+        "opt_missing": "The game hasn't been started on this PC yet",
+        # server
+        "srv_checking": "Checking the server...", "srv_ok": "Server is reachable",
+        "srv_down": "Can't reach the server {} - check your internet connection",
+        "srv_none": "No server address set",
+        # game
+        "game_off": "Not running", "game_starting": "Starting...", "game_ok": "Running, mod loaded",
+        "game_no_mod": "Running, but the S4OM mod didn't load - close the game and start it again",
+        # connection
+        "link_none": "Click Host a game, or type a friend's code and click Join",
+        "link_host_idle": "Room {} opens when you start The Sims 4 and load your household",
+        "link_join_idle": "You'll join room {} when you start The Sims 4",
+        "link_soon": "Connecting in a moment...", "link_off": "Online is off",
+        "link_hosting": "Hosting room {} - in the room: {}",
+        "link_hosting_alone": "Hosting room {} - nobody has joined yet, give them the code",
+        "link_connected": "Connected to room {} - in the room: {}",
+        "link_waiting": "Waiting for the host to open room {}...",
+        "link_joining": "Connecting to the host (room {})...",
+        "link_reconnecting": "Connection lost - reconnecting to the host...",
+        "link_other_room": "The game is in room {}. To switch to room {} close The Sims 4 and start it again",
+        "err_ERR NO_ROOM": "Room {} isn't open - check the code, the host has to be in the game",
+        "err_ERR ROOM_FULL": "Room {} is full (12 players)",
+        "err_ERR ROOM_TAKEN": "Room code {} is already used by someone else - click Play alone, then Host a game for a new code",
+        "err_ERR HOST_TIMEOUT": "The host of room {} isn't answering - they may be loading; trying again",
+        "err_ERR SLOW_DOWN": "Too many tries in a short time - wait a minute",
+        "err_ERR SERVER_FULL": "The server has no room for another game right now",
+        "err_other": "The server refused: {}",
+        # host's game
+        "world_none": "-",
+        "world_host_idle": "Your game is sent by itself when someone joins",
+        "world_need_household": "Load your household - then your game is sent to: {}",
+        "world_need_save": "Save your game once (Esc > Save As) so it can be sent to: {}",
+        "world_saving": "Saving your game for: {}...", "world_sending": "Sending your game...",
+        "world_sent": "Your game was sent to the players",
+        "world_join_idle": "The host's game arrives by itself once you're connected",
+        "world_receiving_wait": "The host is saving their game...",
+        "world_receiving": "Receiving the host's game ({}%)...",
+        "world_arrived": "The host's game arrived - click \"Load host's game\" in The Sims 4",
+        "world_opening": "Opening the host's game...",
+        "world_in": "You're in the host's game",
+        "world_manual": "The host's game arrived - open it yourself: Load Game, the save with the host's name",
+        # headline
+        "hl_host_idle": "Room {} is yours. Start The Sims 4 and load your household - the room opens by itself. Give this code to your friends.",
+        "hl_join_idle": "You'll join room {}. Start The Sims 4 - you're connected as soon as the host is in the game, and their game opens by itself.",
     },
     "pl": {
         "name": "Twoja nazwa", "server": "Serwer", "host": "Hostuj grę", "join": "Dołącz", "copy": "Kopiuj kod",
-        "code_hint": "kod pokoju", "alone": "Graj sam (online wyłączone)", "checking": "Sprawdzam serwer...",
+        "code_hint": "kod pokoju", "alone": "Graj sam (online wyłączone)", "log": "Co się działo",
         "need_server": "Najpierw wpisz adres serwera (zapytaj osobę, która go prowadzi), np. play.example.org",
         "need_code": "Wpisz kod pokoju od hosta (litery i cyfry).",
-        "no_server": "Nie mogę połączyć się z serwerem {} - sprawdź internet.",
         "copied": "Skopiowano kod pokoju {}.",
         "off": "Online wyłączone - gra uruchomi się normalnie.",
-        "setup_ok": "Mod zainstalowany, mody skryptowe włączone.",
-        "setup_installed": "Zainstalowano mod w folderze Mods.",
-        "setup_updated": "Zaktualizowano mod do tej wersji.",
-        "setup_restart": "Zainstalowano mod - zamknij The Sims 4 i włącz ponownie, żeby się załadował.",
-        "setup_close": "Jest nowsza wersja moda - zamknij The Sims 4, żeby można ją było podmienić, i otwórz to okno ponownie.",
-        "setup_nobundle": "Ta kopia launchera nie ma moda w środku - wrzuć S4OM.ts4script do folderu Mods ręcznie.",
-        "setup_options_fixed": "Mody skryptowe były wyłączone w grze - włączyłem je.",
-        "setup_options_close": "Mody skryptowe są wyłączone w grze. Zamknij The Sims 4 i otwórz to okno ponownie - włączy je.",
-        "setup_moved": "Odłożono na bok błędne kopie moda: {}.",
-        "st_host_idle": "Pokój {} jest Twój. Włącz The Sims 4 i wczytaj rodzinę - pokój otworzy się sam. Podaj ten kod znajomym.",
-        "st_join_idle": "Dołączysz do pokoju {}. Włącz The Sims 4 - połączysz się, gdy tylko host będzie w grze, a jego gra otworzy się sama.",
-        "st_none_idle": "Kliknij Hostuj grę albo wpisz kod od znajomego i kliknij Dołącz.",
-        "st_no_mod": "The Sims 4 działa, ale mod S4OM się nie załadował. Zamknij grę i włącz ją ponownie.",
-        "st_hosting": "Hostujesz pokój {} - w pokoju: {}.",
-        "st_hosting_alone": "Hostujesz pokój {} - nikt jeszcze nie dołączył. Podaj ten kod znajomym.",
-        "st_connected": "Połączono z pokojem {} - w pokoju: {}.",
-        "st_waiting": "Czekam na hosta: pokój {} nie jest jeszcze otwarty. Połączysz się, gdy tylko się otworzy.",
-        "st_joining": "Dołączam do pokoju {}...",
-        "st_game_idle": "The Sims 4 działa. Za chwilę nastąpi połączenie...",
-        "st_game_off": "The Sims 4 działa, online jest wyłączone.",
-        "st_other_room": "Gra jest w pokoju {}. Żeby przejść do pokoju {}, zamknij The Sims 4 i włącz ponownie.",
-        "st_starting": "The Sims 4 się uruchamia...",
+        "row_mod": "Mod", "row_options": "Ustawienia gry", "row_server": "Serwer", "row_game": "Gra",
+        "row_link": "Połączenie", "row_world": "Gra hosta",
+        "mod_checking": "Sprawdzam mod...", "mod_installing": "Trwa instalacja moda...",
+        "mod_replacing": "Trwa podmiana moda na nową wersję...",
+        "mod_installed": "Mod zainstalowany", "mod_updated": "Podmieniono mod na nową wersję", "mod_current": "Mod jest aktualny",
+        "mod_restart": "Mod zainstalowany - zamknij The Sims 4 i włącz ponownie, żeby się załadował",
+        "mod_close": "Czeka nowsza wersja moda - zamknij The Sims 4, żeby można ją było podmienić",
+        "mod_none": "Ten launcher nie ma moda w środku - wrzuć S4OM.ts4script do folderu Mods ręcznie",
+        "mod_moved": " (odłożono błędne kopie: {})",
+        "opt_checking": "Sprawdzam ustawienia gry...", "opt_ok": "Mody skryptowe są włączone",
+        "opt_fixed": "Mody skryptowe były wyłączone - włączyłem je",
+        "opt_close": "Mody skryptowe są wyłączone - zamknij The Sims 4, to okno je włączy",
+        "opt_missing": "Gra nie była jeszcze uruchamiana na tym komputerze",
+        "srv_checking": "Sprawdzam serwer...", "srv_ok": "Serwer jest dostępny",
+        "srv_down": "Nie mogę połączyć się z serwerem {} - sprawdź internet",
+        "srv_none": "Nie ustawiono adresu serwera",
+        "game_off": "Nie jest uruchomiona", "game_starting": "Uruchamia się...", "game_ok": "Działa, mod załadowany",
+        "game_no_mod": "Działa, ale mod S4OM się nie załadował - zamknij grę i włącz ją ponownie",
+        "link_none": "Kliknij Hostuj grę albo wpisz kod od znajomego i kliknij Dołącz",
+        "link_host_idle": "Pokój {} otworzy się, gdy włączysz The Sims 4 i wczytasz rodzinę",
+        "link_join_idle": "Dołączysz do pokoju {} po włączeniu The Sims 4",
+        "link_soon": "Za chwilę nastąpi połączenie...", "link_off": "Online jest wyłączone",
+        "link_hosting": "Hostujesz pokój {} - w pokoju: {}",
+        "link_hosting_alone": "Hostujesz pokój {} - nikt jeszcze nie dołączył, podaj znajomym kod",
+        "link_connected": "Połączono z pokojem {} - w pokoju: {}",
+        "link_waiting": "Czekam, aż host otworzy pokój {}...",
+        "link_joining": "Trwa łączenie z hostem (pokój {})...",
+        "link_reconnecting": "Utracono połączenie - trwa ponowne łączenie z hostem...",
+        "link_other_room": "Gra jest w pokoju {}. Żeby przejść do pokoju {}, zamknij The Sims 4 i włącz ponownie",
+        "err_ERR NO_ROOM": "Pokój {} nie jest otwarty - sprawdź kod, host musi być w grze",
+        "err_ERR ROOM_FULL": "Pokój {} jest pełny (12 graczy)",
+        "err_ERR ROOM_TAKEN": "Kod pokoju {} jest już zajęty przez kogoś innego - kliknij Graj sam, potem Hostuj grę po nowy kod",
+        "err_ERR HOST_TIMEOUT": "Host pokoju {} nie odpowiada - może się wczytuje; próbuję ponownie",
+        "err_ERR SLOW_DOWN": "Za dużo prób w krótkim czasie - odczekaj minutę",
+        "err_ERR SERVER_FULL": "Serwer nie ma teraz miejsca na kolejną grę",
+        "err_other": "Serwer odmówił: {}",
+        "world_none": "-",
+        "world_host_idle": "Twoja gra zostanie wysłana sama, gdy ktoś dołączy",
+        "world_need_household": "Wczytaj rodzinę - wtedy gra zostanie wysłana do: {}",
+        "world_need_save": "Zapisz grę raz (Esc > Zapisz jako), żeby wysłać ją do: {}",
+        "world_saving": "Zapisuję grę dla: {}...", "world_sending": "Wysyłam grę...",
+        "world_sent": "Gra została wysłana graczom",
+        "world_join_idle": "Gra hosta dotrze sama, gdy tylko się połączysz",
+        "world_receiving_wait": "Host zapisuje swoją grę...",
+        "world_receiving": "Odbieram grę hosta ({}%)...",
+        "world_arrived": "Gra hosta dotarła - kliknij w The Sims 4 „Load host's game”",
+        "world_opening": "Otwieram grę hosta...",
+        "world_in": "Jesteś w grze hosta",
+        "world_manual": "Gra hosta dotarła - otwórz ją ręcznie: Wczytaj grę, zapis z nazwą hosta",
+        "hl_host_idle": "Pokój {} jest Twój. Włącz The Sims 4 i wczytaj rodzinę - pokój otworzy się sam. Podaj ten kod znajomym.",
+        "hl_join_idle": "Dołączysz do pokoju {}. Włącz The Sims 4 - połączysz się, gdy tylko host będzie w grze, a jego gra otworzy się sama.",
     },
 }
 
@@ -234,10 +299,12 @@ def stray_copies(mods):
     return found
 
 
-def install_mod(src=None, mods=None, running=None):
+def install_mod(src=None, mods=None, running=None, on_step=None):
     """Put the bundled mod into Mods. -> (state, [moved stray files])
     state: 'none' no bundled mod | 'current' already there | 'installed' | 'updated' |
-           'restart' put in while the game runs (loads next start) | 'close' can't replace while the game runs"""
+           'restart' put in while the game runs (loads next start) | 'close' can't replace while the game runs
+    on_step('installing' | 'replacing') is called just before the file is written, so a window
+    can say "replacing the mod..." while it happens."""
     src = bundled_mod() if src is None else src
     mods = mods or mods_dir()
     if not src:
@@ -259,6 +326,8 @@ def install_mod(src=None, mods=None, running=None):
         return "current", moved
     if had and running:
         return "close", moved          # the game holds the old file; replacing it mid-game helps nobody
+    if on_step is not None:
+        on_step("replacing" if had else "installing")
     try:
         os.makedirs(mods, exist_ok=True)
         shutil.copyfile(src, dst + ".tmp")
@@ -300,22 +369,6 @@ def fix_options(path=None, running=None):
     except OSError:
         return "close"
     return "fixed"
-
-
-def setup_message(mod_state, moved, options_state, lang=None):
-    """One or two lines for the player about what was installed or fixed."""
-    lines = []
-    key = {"installed": "setup_installed", "updated": "setup_updated", "restart": "setup_restart",
-           "close": "setup_close", "none": "setup_nobundle"}.get(mod_state)
-    if key:
-        lines.append(tr(key, lang=lang))
-    if options_state == "fixed":
-        lines.append(tr("setup_options_fixed", lang=lang))
-    elif options_state == "close":
-        lines.append(tr("setup_options_close", lang=lang))
-    if moved:
-        lines.append(tr("setup_moved", ", ".join(moved), lang=lang))
-    return "\n".join(lines) or tr("setup_ok", lang=lang)
 
 
 # ---------------------------------------------------------------- sessions
@@ -409,42 +462,155 @@ def read_status(path=None, now=None):
     return data
 
 
-def describe(cfg, status, running, lang=None, starting=False):
-    """The one line that tells the player where they stand.
-    status: read_status(). running: is the game's process there. starting: the game has only
-    just been seen running, so a missing status still means "loading", not "the mod is missing"."""
+ROWS = ("mod", "options", "server", "game", "link", "world")
+ICON = {"idle": "–", "busy": "…", "ok": "✔", "problem": "✖"}
+COLOR = {"idle": "#6e7781", "busy": "#9a6700", "ok": "#1a7f37", "problem": "#cf222e"}
+
+MOD_STEP = {None: ("idle", None), "checking": ("busy", "mod_checking"), "installing": ("busy", "mod_installing"),
+            "replacing": ("busy", "mod_replacing"), "installed": ("ok", "mod_installed"), "updated": ("ok", "mod_updated"),
+            "current": ("ok", "mod_current"), "restart": ("problem", "mod_restart"), "close": ("problem", "mod_close"),
+            "none": ("problem", "mod_none")}
+OPT_STEP = {None: ("idle", None), "checking": ("busy", "opt_checking"), "ok": ("ok", "opt_ok"), "fixed": ("ok", "opt_fixed"),
+            "close": ("problem", "opt_close"), "missing": ("idle", "opt_missing")}
+
+
+def steps(cfg, status, running, setup=None, relay=None, starting=False, lang=None):
+    """Every stage between "window opened" and "playing together", each with where it stands.
+
+    -> [(row, level, text)] for ROWS, level one of idle / busy / ok / problem.
+    cfg: the launcher config.  status: read_status().  running: is the game's process there.
+    setup: {"mod": state, "moved": [...], "options": state} from the install step, states as
+    install_mod / fix_options return them plus the in-progress 'checking', 'installing', 'replacing'.
+    relay: None (not checked) | 'checking' | True | False | 'none' (no address).
+    starting: the game was only just seen running - no status yet still means "loading"."""
+    t = lambda key, *args: tr(key, *args, lang=lang)
+    setup = setup or {}
     mode, code = cfg.get("mode"), clean_code(cfg.get("room_code")) or "?"
     wants = mode in ("host", "join")
-    if status is None and not running:
-        if mode == "host":
-            return tr("st_host_idle", code, lang=lang)
-        if mode == "join":
-            return tr("st_join_idle", code, lang=lang)
-        return tr("st_none_idle", lang=lang)
-    if status is None:
-        return tr("st_starting" if starting else "st_no_mod", lang=lang)
-    state, room = status.get("state"), str(status.get("room") or "").upper()
-    players = ", ".join(str(p) for p in status.get("players") or [])
-    note = status.get("note") or ""
-    if state != "idle" and wants and room and room != code:
-        return tr("st_other_room", room, code, lang=lang)
-    if state == "hosting":
-        others = len(status.get("players") or []) > 1
-        line = tr("st_hosting", room, players, lang=lang) if others else tr("st_hosting_alone", room, lang=lang)
-    elif state == "connected":
-        line = tr("st_connected", room, players or "?", lang=lang)
-    elif state == "waiting for the host":
-        line = tr("st_waiting", room, lang=lang)
-    elif state == "joining":
-        line = tr("st_joining", room, lang=lang)
+    out = []
+
+    level, key = MOD_STEP.get(setup.get("mod"), ("idle", None))
+    text = t(key) if key else ICON["idle"]
+    if setup.get("moved"):
+        text += t("mod_moved", ", ".join(setup["moved"]))
+    out.append(("mod", level, text))
+
+    level, key = OPT_STEP.get(setup.get("options"), ("idle", None))
+    out.append(("options", level, t(key) if key else ICON["idle"]))
+
+    if relay == "checking":
+        out.append(("server", "busy", t("srv_checking")))
+    elif relay is True:
+        out.append(("server", "ok", t("srv_ok")))
+    elif relay is False:
+        out.append(("server", "problem", t("srv_down", str(cfg.get("relay") or DEFAULT_RELAY))))
+    elif relay == "none":
+        out.append(("server", "problem", t("srv_none")))
     else:
-        line = tr("st_game_idle", lang=lang) if wants else tr("st_game_off", lang=lang)
-    if note and state != "idle":
-        line += "\n" + note
-    return line
+        out.append(("server", "idle", ICON["idle"]))
+
+    if status is not None:
+        out.append(("game", "ok", t("game_ok")))
+    elif not running:
+        out.append(("game", "idle", t("game_off")))
+    elif starting:
+        out.append(("game", "busy", t("game_starting")))
+    else:
+        out.append(("game", "problem", t("game_no_mod")))
+
+    if status is None:
+        key = {"host": "link_host_idle", "join": "link_join_idle"}.get(mode)
+        out.append(("link", "idle", t(key, code) if key else t("link_none")))
+        out.append(("world", "idle", t({"host": "world_host_idle", "join": "world_join_idle"}.get(mode, "world_none"))))
+        return out
+
+    state, room = status.get("state"), str(status.get("room") or "").upper()
+    players = [str(x) for x in status.get("players") or []]
+    error = status.get("error")
+    if state not in ("idle", None) and wants and room and room != code:
+        out.append(("link", "problem", t("link_other_room", room, code)))
+    elif error and state not in ("hosting", "connected"):
+        key = "err_" + str(error)
+        out.append(("link", "problem", t(key, room or code) if key in TEXT["en"] else t("err_other", error)))
+    elif state == "hosting":
+        others = len(players) > 1
+        out.append(("link", "ok", t("link_hosting", room, ", ".join(players)) if others else t("link_hosting_alone", room)))
+    elif state == "connected":
+        out.append(("link", "ok", t("link_connected", room, ", ".join(players) or "?")))
+    elif state == "waiting for the host":
+        out.append(("link", "busy", t("link_waiting", room)))
+    elif state == "joining":
+        out.append(("link", "busy", t("link_joining", room or code)))
+    elif state == "reconnecting":
+        out.append(("link", "busy", t("link_reconnecting")))
+    elif wants:
+        out.append(("link", "busy", t("link_soon")))
+    else:
+        out.append(("link", "idle", t("link_off")))
+
+    hand = status.get("handoff") or {}
+    phase, names = hand.get("phase") or "", ", ".join(str(n) for n in hand.get("names") or []) or "?"
+    progress = hand.get("progress")
+    if status.get("host"):
+        world = {"need_household": ("busy", t("world_need_household", names)),
+                 "need_save": ("problem", t("world_need_save", names)),
+                 "saving": ("busy", t("world_saving", names)),
+                 "sending": ("busy", t("world_sending")),
+                 "sent": ("ok", t("world_sent"))}.get(phase, ("idle", t("world_host_idle") if state == "hosting" else t("world_none")))
+    else:
+        world = {"receiving": ("busy", t("world_receiving", progress) if progress is not None else t("world_receiving_wait")),
+                 "arrived": ("problem", t("world_arrived")),
+                 "opening": ("busy", t("world_opening")),
+                 "in_host_game": ("ok", t("world_in")),
+                 "open_manually": ("problem", t("world_manual"))}.get(
+                     phase, ("idle", t("world_join_idle") if state not in ("idle", None) else t("world_none")))
+    out.append(("world",) + world)
+    return out
+
+
+def headline(cfg, rows, lang=None):
+    """One sentence: what the player should do, or what is happening, right now."""
+    by = {row: (level, text) for row, level, text in rows}
+    for row in ROWS:                               # something needs the player: say that first
+        if by[row][0] == "problem":
+            return by[row][1]
+    if by["game"][0] == "idle":                    # game not running: what to do next
+        code = clean_code(cfg.get("room_code")) or "?"
+        if cfg.get("mode") == "host":
+            return tr("hl_host_idle", code, lang=lang)
+        if cfg.get("mode") == "join":
+            return tr("hl_join_idle", code, lang=lang)
+        return tr("link_none", lang=lang)
+    for row in ("world", "link", "game", "mod", "options", "server"):   # the furthest stage that is moving
+        if by[row][0] == "busy":
+            return by[row][1]
+    for row in ("world", "link", "game"):
+        if by[row][0] == "ok":
+            return by[row][1]
+    return by["link"][1]
+
+
+def journal(entries, before, rows, now=None, keep=8):
+    """Add a line to the event log for every stage whose state changed. Percentages don't count
+    as a change ("receiving 12%" -> "receiving 40%" is one event). -> the new `before`."""
+    seen = dict(before or {})
+    for row, level, text in rows:
+        mark = (level, re.sub(r"\d+%", "%", text))
+        if seen.get(row) == mark:
+            continue
+        first = row not in seen
+        seen[row] = mark
+        if level == "idle" and first:
+            continue                               # nothing has happened in this stage yet
+        entries.append("{}  {}".format(time.strftime("%H:%M:%S", time.localtime(now or time.time())), text))
+    del entries[:-keep]
+    return seen
 
 
 # ---------------------------------------------------------------- window
+BUSY_SHOWN = 0.7        # seconds an in-progress state stays up, so a quick step is still seen
+
+
 def main():
     import tkinter as tk
     from tkinter import ttk
@@ -453,64 +619,91 @@ def main():
     root = tk.Tk()
     root.title("S4OM Online")
     root.resizable(False, False)
-    pad = {"padx": 12, "pady": 6}
+    pad = {"padx": 12, "pady": 5}
 
     name_var = tk.StringVar(value=clean_name(cfg.get("name")))
     relay_var = tk.StringVar(value=str(cfg.get("relay") or DEFAULT_RELAY))
     code_var = tk.StringVar()
     shown_code = tk.StringVar(value=hosting_code(cfg) or "")
-    status_var = tk.StringVar(value=describe(cfg, None, False))
-    setup_var = tk.StringVar(value="")
-    state = {"busy": False, "message": "", "message_until": 0.0, "running_since": None}
+    headline_var = tk.StringVar()
+    state = {"busy": False, "message_until": 0.0, "running_since": None, "seen": {}, "log": [],
+             "setup": {"mod": None, "moved": [], "options": None}, "relay": None}
+    widgets = {}
 
     def flash(text, seconds=8):
-        """A message about the last click; the live status takes over again after a moment."""
-        state["message"], state["message_until"] = text, time.time() + seconds
-        status_var.set(text)
+        """A message about the last click; the live headline takes over again after a moment."""
+        state["message_until"] = time.time() + seconds
+        headline_var.set(text)
 
     def relay_or_complain():
         relay = clean_relay(relay_var.get())
         if relay is None:
+            state["relay"] = "none"
             flash(tr("need_server"))
         return relay
 
-    def in_background(work, done):
+    def from_thread(fn):
+        root.after(0, fn)
+
+    def do_setup():
+        """Mod and game settings, each reported while it happens."""
+        def show(key, value):
+            from_thread(lambda: (state["setup"].__setitem__(key, value), refresh()))
+
+        def work():
+            running = game_running()
+            show("mod", "checking")
+            time.sleep(BUSY_SHOWN)
+
+            def step(what):
+                show("mod", what)
+                time.sleep(BUSY_SHOWN)
+            mod_state, moved = install_mod(running=running, on_step=step)
+            show("moved", moved)
+            show("mod", mod_state)
+            show("options", "checking")
+            time.sleep(BUSY_SHOWN)
+            show("options", fix_options(running=running))
+        threading.Thread(target=work, daemon=True).start()
+
+    def check_server(then=None):
+        relay = clean_relay(relay_var.get())
+        if relay is None:
+            state["relay"] = "none"
+            refresh()
+            return
         if state["busy"]:
             return
         state["busy"] = True
+        state["relay"] = "checking"
+        refresh()
 
-        def run():
-            try:
-                result = work()
-            except Exception as e:
-                result = e
-            root.after(0, lambda: (state.update(busy=False), done(result)))
-        threading.Thread(target=run, daemon=True).start()
-
-    def do_setup():
         def work():
-            running = game_running()
-            mod_state, moved = install_mod(running=running)
-            return setup_message(mod_state, moved, fix_options(running=running))
-        in_background(work, lambda text: setup_var.set(text if isinstance(text, str) else ""))
+            started = time.time()
+            ok = relay_reachable(relay)
+            time.sleep(max(0.0, BUSY_SHOWN - (time.time() - started)))
+
+            def done():
+                state["busy"] = False
+                state["relay"] = bool(ok)
+                refresh()
+                if then is not None and ok:
+                    then()
+            from_thread(done)
+        threading.Thread(target=work, daemon=True).start()
 
     def start_session(make):
-        relay = relay_or_complain()
-        if relay is None:
+        if relay_or_complain() is None:
             return
-        flash(tr("checking"), 30)
 
-        def done(reachable):
-            if reachable is not True:
-                flash(tr("no_server", relay_var.get().strip()), 15)
-                return
+        def go():
             new = make(load_config())
             save_config(new)
             shown_code.set(hosting_code(new) or "")
             state["message_until"] = 0.0
             refresh()
             do_setup()
-        in_background(lambda: relay_reachable(relay), done)
+        check_server(go)
 
     def on_host():
         start_session(lambda c: host_config(c, name_var.get(), relay_var.get().strip()))
@@ -526,6 +719,7 @@ def main():
         save_config(offline_config(load_config()))
         shown_code.set("")
         flash(tr("off"))
+        refresh(keep_message=True)
 
     def on_copy():
         if shown_code.get():
@@ -533,7 +727,7 @@ def main():
             root.clipboard_append(shown_code.get())
             flash(tr("copied", shown_code.get()), 4)
 
-    def refresh():
+    def refresh(keep_message=False):
         running, status = game_running(), read_status()
         if not running or status is not None:
             state["running_since"] = None
@@ -541,14 +735,27 @@ def main():
             state["running_since"] = time.time()
         # the mod loads some way into the game's start-up: only call it missing after a while
         starting = state["running_since"] is not None and time.time() - state["running_since"] < MOD_LOAD_GRACE
-        if time.time() >= state["message_until"]:
-            status_var.set(describe(load_config(), status, running, starting=starting))
+        current = load_config()
+        rows = steps(current, status, running, state["setup"], state["relay"], starting)
+        for row, level, text in rows:
+            icon, label = widgets[row]
+            icon.configure(text=ICON[level], foreground=COLOR[level])
+            label.configure(text=text, foreground="#1f2328" if level != "idle" else COLOR["idle"])
+        state["seen"] = journal(state["log"], state["seen"], rows)
+        log_box.configure(state="normal")
+        log_box.delete("1.0", "end")
+        log_box.insert("end", "\n".join(state["log"]))
+        log_box.configure(state="disabled")
+        log_box.see("end")
+        if keep_message or time.time() < state["message_until"]:
+            return
+        headline_var.set(headline(current, rows))
 
     def tick():
         try:
             refresh()
         finally:
-            root.after(2500, tick)
+            root.after(2000, tick)
 
     frm = ttk.Frame(root, padding=10)
     frm.grid()
@@ -558,7 +765,7 @@ def main():
         ttk.Label(frm, text=tr("server")).grid(row=1, column=0, sticky="w", **pad)
         ttk.Entry(frm, textvariable=relay_var, width=34).grid(row=1, column=1, columnspan=2, sticky="w", **pad)
 
-    ttk.Separator(frm).grid(row=2, column=0, columnspan=3, sticky="ew", pady=8)
+    ttk.Separator(frm).grid(row=2, column=0, columnspan=3, sticky="ew", pady=6)
     ttk.Button(frm, text=tr("host"), command=on_host).grid(row=3, column=0, sticky="ew", **pad)
     tk.Label(frm, textvariable=shown_code, font=("Consolas", 22, "bold"), width=9).grid(row=3, column=1, **pad)
     ttk.Button(frm, text=tr("copy"), command=on_copy).grid(row=3, column=2, sticky="ew", **pad)
@@ -569,14 +776,30 @@ def main():
     code_entry.bind("<Return>", lambda e: on_join())
     ttk.Label(frm, text=tr("code_hint")).grid(row=4, column=2, sticky="w", **pad)
 
-    ttk.Separator(frm).grid(row=5, column=0, columnspan=3, sticky="ew", pady=8)
-    ttk.Label(frm, textvariable=status_var, wraplength=460, justify="left").grid(row=6, column=0, columnspan=3, sticky="w", **pad)
-    ttk.Label(frm, textvariable=setup_var, wraplength=460, justify="left", foreground="#555").grid(
-        row=7, column=0, columnspan=3, sticky="w", **pad)
-    ttk.Button(frm, text=tr("alone"), command=on_offline).grid(row=8, column=0, columnspan=2, sticky="w", **pad)
+    ttk.Separator(frm).grid(row=5, column=0, columnspan=3, sticky="ew", pady=6)
+    ttk.Label(frm, textvariable=headline_var, wraplength=500, justify="left", font=("Segoe UI", 10, "bold")).grid(
+        row=6, column=0, columnspan=3, sticky="w", **pad)
 
+    box = ttk.Frame(frm)
+    box.grid(row=7, column=0, columnspan=3, sticky="w", padx=12, pady=4)
+    for n, row in enumerate(ROWS):
+        icon = ttk.Label(box, text=ICON["idle"], width=2, font=("Segoe UI Symbol", 11))
+        icon.grid(row=n, column=0, sticky="nw", pady=2)
+        ttk.Label(box, text=tr("row_" + row), width=15).grid(row=n, column=1, sticky="nw", pady=2)
+        label = ttk.Label(box, text="", wraplength=360, justify="left")
+        label.grid(row=n, column=2, sticky="nw", pady=2)
+        widgets[row] = (icon, label)
+
+    ttk.Label(frm, text=tr("log"), foreground=COLOR["idle"]).grid(row=8, column=0, columnspan=3, sticky="w", padx=12, pady=(8, 0))
+    log_box = tk.Text(frm, height=8, width=70, state="disabled", relief="flat", background="#f6f8fa",
+                      font=("Segoe UI", 9), wrap="word")
+    log_box.grid(row=9, column=0, columnspan=3, sticky="w", padx=12, pady=(2, 6))
+    ttk.Button(frm, text=tr("alone"), command=on_offline).grid(row=10, column=0, columnspan=2, sticky="w", **pad)
+
+    refresh()
     do_setup()
-    root.after(300, tick)
+    root.after(900, check_server)
+    root.after(1500, tick)
     root.mainloop()
 
 

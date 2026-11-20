@@ -244,11 +244,15 @@ RELAY_ERRORS = {
 
 _relay_error_seen = {}
 
+_last_relay_error = None    # ("ERR ROOM_FULL", time) of the relay's last refusal, for the status file
+
 def _relay_error_notice(reply):
     """One friendly in-game message per kind of relay refusal (reconnect loops retry quietly)."""
+    global _last_relay_error
     key = next((k for k in RELAY_ERRORS if reply.startswith(k)), None)
     if key is None:
         return
+    _last_relay_error = (key, time.time())
     now = time.time()
     if now - _relay_error_seen.get(key, 0) > 60:
         _relay_error_seen[key] = now
@@ -938,7 +942,7 @@ _host_port = DEFAULT_PORT       # v9.23: 看门狗重启 server 线程用
 
 _want_session = False
 
-MOD_BUILD = "open-relay-2"   # shown in Mods/mp_status.json so a launcher can tell an old mod from this one
+MOD_BUILD = "open-relay-3"   # shown in Mods/mp_status.json so a launcher can tell an old mod from this one
 
 _applied_session = None    # session_watch.signature of the launcher config last started here
 

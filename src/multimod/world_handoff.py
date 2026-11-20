@@ -40,7 +40,11 @@ HINT_EVERY = 90.0       # seconds between reminders to a host who has never save
 REASON = "is sharing their game with a new player"
 
 world_id = ""           # host: id of the copy last sent. joiner: id of the copy last received
-status = ""             # one short line for the status file / log: what the hand-off is doing
+status = ""             # one short line for the log and for launchers that only show text
+phase = ""              # where the hand-off stands, as a code a launcher can translate:
+                        #   host:   need_household, need_save, sent   (saving / sending come from resync)
+                        #   joiner: receiving, arrived, opening, open_manually   (in_host_game is derived)
+_arrived_at = 0.0       # joiner: when the current copy arrived
 
 _waiting = {}           # host: pid -> (player name, time of hello) - players who need the game
 _sent_to = {}           # host: player name -> copy id they were sent while connected
@@ -140,8 +144,9 @@ def on_report(pid, info):
 
 def new_world():
     """Host: a copy of the game was just sent to everyone connected. -> its id"""
-    global status, world_id
+    global phase, status, world_id
     world_id = os.urandom(6).hex()
+    phase = "sent"
     try:
         from multimod import lobby
 
@@ -157,7 +162,7 @@ def new_world():
 
 def tick(now=None):
     """Host, main thread: send the game to whoever is waiting, as soon as that is possible."""
-    global _last_hint, _last_try, status
+    global _last_hint, _last_try, phase, status
     if not network._is_host or not _waiting:
         return
     now = now or time.time()
@@ -172,16 +177,19 @@ def tick(now=None):
     names = ", ".join(sorted(name for (name, _since) in _waiting.values()))
     if not network._has_active_sim():
         status = "waiting: load your household so {} can get your game".format(names)
+        phase = "need_household"
         return
     from multimod import resync
 
     (ok, msg) = resync.request(REASON, auto=True)
     if ok:
+        phase = ""
         status = "saving and sending the game to {}".format(names)
         network._log("hand-off: sending the game to {}".format(names))
         return
     network._log("hand-off: not yet ({})".format(msg))
     if not resync._current_slot()[0]:
+        phase = "need_save"
         status = "waiting: save your game once (Esc > Save As) so {} can get it".format(names)
         if now - _last_hint > HINT_EVERY:
             _last_hint = now
@@ -194,8 +202,10 @@ def on_world(data, slot):
     """Joiner: the host's game has arrived (resync_ready). Remember which copy it is. At the
     main menu open it now - there is no household to show the "Load host's game" pop-up in.
     -> True if the save is being opened (the caller then skips the pop-up)."""
-    global status, world_id
+    global _arrived_at, phase, status, world_id
     world_id = str(data.get("world") or "")
+    _arrived_at = time.time()
+    phase = "arrived"
     status = "the host's game arrived"
     if not at_main_menu():
         return False
@@ -205,9 +215,67 @@ def on_world(data, slot):
         res = autoload._load(slot, "joined from the main menu")
         network._log("hand-off: at the main menu, opening the host's game -> {}".format(res))
         if res == "loading":
+            phase = "opening"
             status = "opening the host's game"
             return True
+        phase = "open_manually"
         status = "the host's game arrived - open it from Load Game ({})".format(res)
     except Exception as e:
         network._log("hand-off: couldn't open the host's game from the main menu: {}".format(e))
     return False
+
+
+def receiving():
+    """Joiner: the host started saving its game for us (resync_start)."""
+    global phase, status
+    phase = "receiving"
+    status = "the host is saving and sending their game"
+
+
+def _receive_progress():
+    """Joiner: percent of the host's save received so far, None when nothing is on its way."""
+    try:
+        from multimod import lobby, resync
+
+        cache = lobby._recv_save_cache.get(resync.SYNC_SLOT)
+        if not cache or not cache.get("total"):
+            return None
+        return int(100 * len(cache.get("chunks") or ()) / cache["total"])
+    except Exception:
+        return None
+
+
+def _opened_since_arrival():
+    """Joiner: has the sync slot been opened (by autoload) since this copy arrived?"""
+    try:
+        from multimod import autoload, resync
+
+        last = autoload.last
+        return bool(last.get("ok")) and last.get("slot") == resync._sync_slot_number() and last.get("at", 0) >= _arrived_at
+    except Exception:
+        return False
+
+
+def handoff_status():
+    """{phase, names, progress} for Mods/mp_status.json - what the launcher's "host's game" row shows.
+    Host phases:   need_household, need_save, saving, sending, sent, "" (nobody waiting)
+    Joiner phases: receiving (+ progress %), arrived (pop-up waiting for a click), opening,
+                   in_host_game, open_manually, "" (nothing happened yet)"""
+    names = sorted(name for (name, _since) in _waiting.values())
+    current, progress = phase, None
+    if network._is_host:
+        try:
+            from multimod import resync
+
+            if resync._phase in ("saving", "sending"):
+                current = resync._phase
+            elif not _waiting and current in ("need_household", "need_save"):
+                current = ""
+        except Exception:
+            pass
+    else:
+        if current == "receiving":
+            progress = _receive_progress()
+        if current in ("arrived", "opening") and (current == "opening" or _opened_since_arrival()):
+            current = "in_host_game" if household_id() else "opening"
+    return {"phase": current, "names": names, "progress": progress}

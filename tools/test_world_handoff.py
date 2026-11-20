@@ -91,8 +91,40 @@ def decision_tests():
     check("hello carries the copy id, the household and 'at the main menu'",
           h.hello_fields() == {"world": "w9", "hh": 5, "menu": True})
 
+    # what the status file says about the hand-off
+    from multimod import lobby, resync
+    h.phase, h._waiting = "", {}
+    network._is_host = True
+    h._waiting[3] = ("Ola", 0.0)
+    h.phase = "need_save"
+    check("status: host waiting for a save names who is waiting", h.handoff_status() == {"phase": "need_save", "names": ["Ola"], "progress": None})
+    resync._phase = "saving"
+    check("status: while the game is being saved / sent, that wins", h.handoff_status()["phase"] == "saving")
+    resync._phase = None
+    h._waiting.clear()
+    check("status: nobody waiting any more -> no stale 'need save'", h.handoff_status()["phase"] == "")
+    network._is_host = False
+    h.receiving()
+    check("status: joiner, host is saving -> receiving, no percentage yet", h.handoff_status() == {"phase": "receiving", "names": [], "progress": None})
+    lobby._recv_save_cache[resync.SYNC_SLOT] = {"chunks": {0: "a", 1: "b", 2: "c"}, "total": 8}
+    check("status: joiner, 3 of 8 parts received -> 37%", h.handoff_status()["progress"] == 37)
+    lobby._recv_save_cache.clear()
+    h.phase, h.household_id = "opening", (lambda: 0)
+    check("status: joiner, save opening -> opening until a household is loaded", h.handoff_status()["phase"] == "opening")
+    h.household_id = lambda: 5
+    check("status: joiner, household loaded -> in the host's game", h.handoff_status()["phase"] == "in_host_game")
+    h.phase = "arrived"
+    check("status: joiner who hasn't clicked the pop-up stays 'arrived'", h.handoff_status()["phase"] == "arrived")
+    h.phase = ""
+
     st = w.status()
-    check("status file: state, room, players, build", st["state"] == "idle" and "players" in st and st["version"] == network.MOD_BUILD, st)
+    check("status file: state, room, players, hand-off, build",
+          st["state"] == "idle" and "players" in st and "phase" in st["handoff"] and st["version"] == network.MOD_BUILD, st)
+    network._last_relay_error = ("ERR ROOM_FULL", time.time())
+    check("status file: a fresh refusal from the server is included", w.status().get("error") == "ERR ROOM_FULL")
+    network._last_relay_error = ("ERR ROOM_FULL", time.time() - 600)
+    check("status file: an old one is not", "error" not in w.status())
+    network._last_relay_error = None
 
 
 # ---------------------------------------------------------------- [B]
@@ -113,13 +145,21 @@ def run_peer(role):
     os.makedirs(lobby.SAVES_DIR, exist_ok=True)
     start = time.time()
     out = {"role": role}
+    phases, progress = [], []
+
+    def sample():
+        st = h.handoff_status()
+        if st["phase"] and (not phases or phases[-1] != st["phase"]):
+            phases.append(st["phase"])
+        if st["progress"] is not None:
+            progress.append(st["progress"])
 
     if role == "host":
         save = os.path.join(lobby.SAVES_DIR, "Slot_00000002.save")
         state = {"saved_once": False, "requests": 0, "sha": ""}
 
         def start_save(slot_id, name):          # the game writing the save
-            data = os.urandom(300 * 1024)
+            data = os.urandom(6 * 1024 * 1024)
             with open(save, "wb") as f:
                 f.write(data)
             state["sha"] = hashlib.sha256(data).hexdigest()
@@ -147,8 +187,9 @@ def run_peer(role):
                 state["saved_once"] = True      # the host does Esc > Save As
             network._process_incoming()
             network._desync_tick()
+            sample()
             time.sleep(0.05)
-        out.update(requests=state["requests"], sha=state["sha"], world=h.world_id,
+        out.update(requests=state["requests"], sha=state["sha"], world=h.world_id, phases=phases,
                    told_to_save=any("save it once" in n for n in notes),
                    saw_in_game=any("already in the host's game" in l for l in log),
                    saw_loading=any("still loading" in l for l in log),
@@ -166,12 +207,20 @@ def run_peer(role):
         autoload._load = load
         h.household_id = lambda: state["hh"]
         h.at_main_menu = lambda: state["menu"]
+        real_chunk = lobby.on_save_chunk
+
+        def chunk_then_sample(data):        # look after every part: over loopback the whole save can
+            real_chunk(data)                # arrive between two passes of the loop below
+            sample()
+
+        lobby.on_save_chunk = chunk_then_sample
         network._is_host = False
         ok, desc = network._join_when_open(ROOM)
         out["first_answer"] = desc
         loaded_at = None
         while time.time() - start < RUN:
             network._process_incoming()
+            sample()
             if loads and loaded_at is None:
                 loaded_at = time.time()
             if loaded_at and not state["dropped"] and time.time() - loaded_at > 2.0 and network._client_socket is not None:
@@ -189,7 +238,7 @@ def run_peer(role):
             time.sleep(0.05)
         got = os.path.join(lobby.SAVES_DIR, resync.SYNC_SLOT)
         sha = hashlib.sha256(open(got, "rb").read()).hexdigest() if os.path.exists(got) else ""
-        out.update(loads=loads, sha=sha, world=h.world_id, dropped=state["dropped"],
+        out.update(loads=loads, sha=sha, world=h.world_id, dropped=state["dropped"], phases=phases, progress=progress,
                    waited=any("isn't open yet" in l for l in log),
                    connected_again=sum(1 for l in log if l.startswith("connected to")),
                    back=state["back"], reported=state["reported"])
@@ -233,7 +282,12 @@ def session_test():
     check("joiner reported the household it loaded", joiner["reported"], joiner["log_tail"])
     check("host then saw them as in its game - and never sent a second copy",
           host["saw_in_game"] and host["waiting"] == 0 and host["requests"] == 1, (host["requests"], host["log_tail"]))
-    if not all(results[-11:]):
+    in_order = lambda seq, want: [x for x in seq if x in want] == want
+    check("host reported: need save -> saving -> sending -> sent", in_order(host["phases"], ["need_save", "saving", "sending", "sent"]), host["phases"])
+    check("joiner reported: receiving -> opening -> in the host's game", in_order(joiner["phases"], ["receiving", "opening", "in_host_game"]), joiner["phases"])
+    check("joiner reported a percentage while receiving", any(0 <= x <= 100 for x in joiner["progress"])
+          and joiner["progress"] == sorted(joiner["progress"]), joiner["progress"][:12])
+    if not all(results[-14:]):
         print("    host log:", *host["log_tail"], sep="\n      ")
         print("    joiner log:", *joiner["log_tail"], sep="\n      ")
 

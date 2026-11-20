@@ -289,10 +289,16 @@ def launcher_setup_tests():
         f.write(b"[options]\ncdsautomaticupdates = 1\n")
     check("setting missing altogether -> added", L.fix_options(ini, running=False) == "fixed"
           and b"[options]\nscriptmodsenabled = 1\n" in open(ini, "rb").read())
-    check("messages for the player exist in both languages",
-          "Mods" in L.setup_message("installed", [], "ok", lang="en") and "Mods" in L.setup_message("installed", [], "ok", lang="pl")
-          and L.setup_message("current", [], "ok", lang="pl") == L.TEXT["pl"]["setup_ok"]
-          and set(L.TEXT["en"]) == set(L.TEXT["pl"]))
+    seen = []
+    with open(target, "wb") as f:
+        f.write(b"old mod build")
+    L.install_mod(src=src, mods=mods, running=False, on_step=seen.append)
+    os.remove(target)
+    L.install_mod(src=src, mods=mods, running=False, on_step=seen.append)
+    L.install_mod(src=src, mods=mods, running=False, on_step=seen.append)
+    check("the window is told 'replacing' / 'installing' before the file is written, and nothing when it is current",
+          seen == ["replacing", "installing"], seen)
+    check("every text exists in both languages", set(L.TEXT["en"]) == set(L.TEXT["pl"]) and all(L.TEXT["pl"].values()))
 
     spath = os.path.join(root, "mp_status.json")
     now = time.time()
@@ -304,20 +310,104 @@ def launcher_setup_tests():
 
     host = {"mode": "host", "room_code": "PARTY7"}
     join = {"mode": "join", "room_code": "PARTY7"}
-    d = lambda cfg, status, running, **k: L.describe(cfg, status, running, lang="en", **k)
-    check("game closed: tells the host / joiner / newcomer what to do next",
-          "Start The Sims 4" in d(host, None, False) and "PARTY7" in d(join, None, False) and "Host a game" in d({}, None, False))
-    check("game just started: 'starting', not 'the mod is missing'", "starting" in d(join, None, True, starting=True))
-    check("game running without the mod reporting in: says the mod didn't load", "didn't load" in d(join, None, True))
-    check("hosting alone / with friends", "nobody has joined" in d(host, {"state": "hosting", "room": "PARTY7", "players": ["Ania"]}, True)
-          and "Ania, Ola" in d(host, {"state": "hosting", "room": "PARTY7", "players": ["Ania", "Ola"]}, True))
-    check("joiner waiting for the host", "isn't open yet" in d(join, {"state": "waiting for the host", "room": "PARTY7", "players": []}, True))
-    check("joiner connected, with the hand-off note",
-          "Connected to room PARTY7" in d(join, {"state": "connected", "room": "PARTY7", "players": ["Ania", "Ola"], "note": "the host's game arrived"}, True)
-          and "host's game arrived" in d(join, {"state": "connected", "room": "PARTY7", "players": ["Ania"], "note": "the host's game arrived"}, True))
-    check("game in another room than the launcher asks for -> says a restart is needed",
-          "close The Sims 4" in d(join, {"state": "hosting", "room": "OLD123", "players": ["Ania"]}, True))
-    check("Polish window on request", "Hostujesz pokój PARTY7" in L.describe(host, {"state": "hosting", "room": "PARTY7", "players": ["Ania"]}, True, lang="pl"))
+
+    def row(name, cfg, status, running, lang="en", **k):
+        rows = L.steps(cfg, status, running, lang=lang, **k)
+        assert [r[0] for r in rows] == list(L.ROWS), rows
+        return dict((r[0], (r[1], r[2])) for r in rows)[name]
+
+    print("[F] launcher: the list of stages, each with its state")
+    # mod and game settings, while they happen and after
+    check("mod: checking -> replacing -> replaced",
+          row("mod", join, None, False, setup={"mod": "checking"}) == ("busy", "Checking the mod...")
+          and row("mod", join, None, False, setup={"mod": "replacing"})[0] == "busy"
+          and "Replacing the mod" in row("mod", join, None, False, setup={"mod": "replacing"})[1]
+          and row("mod", join, None, False, setup={"mod": "updated"}) == ("ok", "Mod replaced with the new version"))
+    check("mod: installing -> installed; up to date",
+          "Installing" in row("mod", join, None, False, setup={"mod": "installing"})[1]
+          and row("mod", join, None, False, setup={"mod": "installed"})[0] == "ok"
+          and row("mod", join, None, False, setup={"mod": "current"}) == ("ok", "Mod is up to date"))
+    check("mod: needs the game closed / restarted -> a problem that says what to do",
+          row("mod", join, None, True, setup={"mod": "close"})[0] == "problem"
+          and "close The Sims 4" in row("mod", join, None, True, setup={"mod": "restart"})[1])
+    check("mod: wrong copies moved aside are mentioned",
+          "S4OM (1).ts4script" in row("mod", join, None, False, setup={"mod": "updated", "moved": ["S4OM (1).ts4script"]})[1])
+    check("game settings: checking -> on / switched on / needs the game closed",
+          row("options", join, None, False, setup={"options": "checking"})[0] == "busy"
+          and row("options", join, None, False, setup={"options": "ok"})[0] == "ok"
+          and "turned them on" in row("options", join, None, False, setup={"options": "fixed"})[1]
+          and row("options", join, None, True, setup={"options": "close"})[0] == "problem")
+    check("server: checking -> reachable / unreachable / no address",
+          row("server", join, None, False, relay="checking")[0] == "busy" and row("server", join, None, False, relay=True)[0] == "ok"
+          and row("server", join, None, False, relay=False)[0] == "problem" and row("server", join, None, False, relay="none")[0] == "problem")
+    # the game
+    check("game: not running / starting / running with the mod / running without it",
+          row("game", join, None, False)[0] == "idle" and row("game", join, None, True, starting=True) == ("busy", "Starting...")
+          and row("game", join, {"state": "idle"}, True)[0] == "ok" and row("game", join, None, True)[0] == "problem"
+          and "didn't load" in row("game", join, None, True)[1])
+    # the connection
+    check("connection, game closed: says what will happen", "PARTY7" in row("link", host, None, False)[1]
+          and "join room PARTY7" in row("link", join, None, False)[1] and "Host a game" in row("link", {}, None, False)[1])
+    check("connection: hosting alone / with friends",
+          "nobody has joined" in row("link", host, {"state": "hosting", "room": "PARTY7", "players": ["Ania"], "host": True}, True)[1]
+          and row("link", host, {"state": "hosting", "room": "PARTY7", "players": ["Ania", "Ola"], "host": True}, True)
+          == ("ok", "Hosting room PARTY7 - in the room: Ania, Ola"))
+    check("connection: waiting for the host -> connecting -> connected -> reconnecting",
+          row("link", join, {"state": "waiting for the host", "room": "PARTY7"}, True) == ("busy", "Waiting for the host to open room PARTY7...")
+          and row("link", join, {"state": "joining", "room": "PARTY7"}, True) == ("busy", "Connecting to the host (room PARTY7)...")
+          and row("link", join, {"state": "connected", "room": "PARTY7", "players": ["Ania", "Ola"]}, True) == ("ok", "Connected to room PARTY7 - in the room: Ania, Ola")
+          and row("link", join, {"state": "reconnecting", "room": "PARTY7"}, True)[0] == "busy")
+    check("connection: the server's refusal is shown in words",
+          row("link", join, {"state": "joining", "room": "PARTY7", "error": "ERR ROOM_FULL"}, True) == ("problem", "Room PARTY7 is full (12 players)")
+          and "ERR WEIRD" in row("link", join, {"state": "idle", "room": "", "error": "ERR WEIRD"}, True)[1])
+    check("connection: game is in another room than asked for -> restart needed",
+          "close The Sims 4" in row("link", join, {"state": "hosting", "room": "OLD123", "players": ["Ania"]}, True)[1])
+    # the host's game
+    hosting = {"state": "hosting", "room": "PARTY7", "players": ["Ania", "Ola"], "host": True}
+    world = lambda phase, **k: row("world", host, dict(hosting, handoff=dict({"phase": phase, "names": ["Ola"]}, **k)), True)
+    check("host's game, host side: need household -> need save -> saving -> sending -> sent",
+          "Load your household" in world("need_household")[1] and world("need_save") == ("problem", "Save your game once (Esc > Save As) so it can be sent to: Ola")
+          and world("saving") == ("busy", "Saving your game for: Ola...") and world("sending")[0] == "busy" and world("sent")[0] == "ok")
+    joined = {"state": "connected", "room": "PARTY7", "players": ["Ania", "Ola"], "host": False}
+    world = lambda phase, **k: row("world", join, dict(joined, handoff=dict({"phase": phase, "names": []}, **k)), True)
+    check("host's game, joiner side: host saving -> receiving 62% -> opening -> in the host's game",
+          world("receiving") == ("busy", "The host is saving their game...")
+          and world("receiving", progress=62) == ("busy", "Receiving the host's game (62%)...")
+          and world("opening") == ("busy", "Opening the host's game...") and world("in_host_game") == ("ok", "You're in the host's game"))
+    check("host's game, joiner side: a click is needed / has to be opened by hand",
+          world("arrived")[0] == "problem" and "Load host's game" in world("arrived")[1] and world("open_manually")[0] == "problem")
+    check("an older mod (no stages in its status) still shows the connection", world("")[0] == "idle"
+          and row("link", join, {"state": "connected", "room": "PARTY7", "players": ["Ola"]}, True)[0] == "ok")
+    check("Polish on request", row("link", host, hosting, True, lang="pl") == ("ok", "Hostujesz pokój PARTY7 - w pokoju: Ania, Ola")
+          and row("mod", join, None, False, lang="pl", setup={"mod": "replacing"}) == ("busy", "Trwa podmiana moda na nową wersję...")
+          and row("link", join, {"state": "joining", "room": "PARTY7"}, True, lang="pl") == ("busy", "Trwa łączenie z hostem (pokój PARTY7)..."))
+
+    # the headline: the one thing to read
+    hl = lambda cfg, status, running, **k: L.headline(cfg, L.steps(cfg, status, running, lang="en", **k), lang="en")
+    check("headline, game closed: what to do next", "Start The Sims 4" in hl(host, None, False) and "PARTY7" in hl(join, None, False)
+          and "Host a game" in hl({}, None, False))
+    check("headline: a problem comes first", "didn't load" in hl(join, None, True)
+          and "Save your game once" in hl(host, dict(hosting, handoff={"phase": "need_save", "names": ["Ola"]}), True))
+    check("headline: otherwise the furthest stage that is moving",
+          hl(join, dict(joined, handoff={"phase": "receiving", "progress": 40}), True) == "Receiving the host's game (40%)..."
+          and hl(join, {"state": "joining", "room": "PARTY7"}, True) == "Connecting to the host (room PARTY7)..."
+          and hl(join, None, False, setup={"mod": "replacing"}).startswith("You'll join"))
+    check("headline: all done", hl(join, dict(joined, handoff={"phase": "in_host_game"}), True) == "You're in the host's game")
+
+    # the event log
+    log, seen = [], {}
+    seen = L.journal(log, seen, L.steps(join, None, False, lang="en"), now=1000)
+    check("log: a freshly opened window with nothing going on logs nothing but the game being off", len(log) <= 1, log)
+    n0 = len(log)
+    seen = L.journal(log, seen, L.steps(join, None, False, lang="en", setup={"mod": "replacing"}), now=1001)
+    seen = L.journal(log, seen, L.steps(join, None, False, lang="en", setup={"mod": "updated"}), now=1002)
+    seen = L.journal(log, seen, L.steps(join, None, False, lang="en", setup={"mod": "updated"}), now=1003)
+    check("log: one line per change, none when nothing changed",
+          len(log) == n0 + 2 and "Replacing the mod" in log[-2] and "Mod replaced" in log[-1], log)
+    for pct in (5, 30, 80):
+        seen = L.journal(log, seen, L.steps(join, dict(joined, handoff={"phase": "receiving", "progress": pct}), True, lang="en"), now=1010 + pct)
+    check("log: a rising percentage is one event, not many", sum("Receiving the host's game" in l for l in log) == 1, log)
+    check("log: lines carry the time and only the last few are kept", log[-1][2] == ":" and len(log) <= 8, log)
 
 
 def remote_main(address):
